@@ -15,7 +15,13 @@ fn main() {
         println!("cargo:rerun-if-env-changed=SIMPLEPDF_PDFIUM");
         println!("cargo:rerun-if-changed={}", pdfium.display());
         let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
-        let dst = out.ancestors().nth(3).unwrap().join("pdfium.dll");
+        // Cargo places build-script output beneath <profile>/build in both target layouts.
+        let profile = out
+            .ancestors()
+            .find(|dir| dir.file_name().is_some_and(|name| name == "build"))
+            .and_then(std::path::Path::parent)
+            .expect("Cargo profile directory");
+        let dst = profile.join("pdfium.dll");
         let data = std::fs::read(&pdfium).expect("native/pdfium/pdfium.dll");
         if std::fs::read(&dst).ok().as_deref() != Some(&data) {
             std::fs::write(dst, data).expect("stage PDFium");
