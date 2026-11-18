@@ -1,0 +1,12 @@
+/target/
+/release_rust/
+/installer_tools/
+/installers/
+/legacy/
+/verification_final/
+/__pycache__/
+/SimplePDF.zip
+/release_manifest.json
+/*.lnk
+/installer/*_fixture.iss
+/installer/migrate_path.iss

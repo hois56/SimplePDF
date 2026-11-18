@@ -1,0 +1,33 @@
+[package]
+name = "simplepdf"
+version = "1.0.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+build = "build.rs"
+
+[package.metadata.winresource]
+FileVersion = "1.0"
+ProductVersion = "1.0"
+
+[[bin]]
+name = "SimplePDF"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+eframe = { version = "0.31.1", default-features = false, features = ["default_fonts", "glow", "x11"] }
+ttf-parser = "0.25"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "ico", "bmp", "tiff"] }
+lopdf = "0.38"
+rfd = "0.15"
+tempfile = "3"
+unicode-normalization = "0.1"
+zip = { version = "4", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+fast_image_resize = { version = "6.1.0", default-features = false, features = ["image", "only_u8x4"] }
+
+[build-dependencies]
+winresource = "0.1"
+
+[profile.release]
+strip = "symbols"
+
