@@ -395,10 +395,25 @@ impl Page<'_> {
         }
     }
     fn render_bitmap(&self, size: [usize; 2]) -> Result<RgbaImage> {
-        let [w, h] = size.map(|n| n as i32);
-        let mut buf = vec![255; w as usize * h as usize * 4];
+        self.bitmap_on(size.map(|n| n as u32), 255)
+    }
+    pub fn transparent_bitmap(&self, size: [u32; 2]) -> Result<RgbaImage> {
+        self.bitmap_on(size, 0)
+    }
+    fn bitmap_on(&self, size: [u32; 2], background: u8) -> Result<RgbaImage> {
+        let [width, height] = size;
+        let (w, h) = (i32::try_from(width)?, i32::try_from(height)?);
+        let stride = w.checked_mul(4).context("이미지 너비가 너무 큽니다.")?;
+        ensure!(w > 0 && h > 0, "빈 이미지입니다.");
+        let len = (stride as usize)
+            .checked_mul(h as usize)
+            .context("이미지 크기")?;
+        let mut buf = Vec::new();
+        buf.try_reserve_exact(len)
+            .context("이미지 메모리를 할당할 수 없습니다.")?;
+        buf.resize(len, background);
         let bmp = Bitmap(checked(
-            unsafe { FPDFBitmap_CreateEx(w, h, 4, buf.as_mut_ptr(), w * 4) },
+            unsafe { FPDFBitmap_CreateEx(w, h, 4, buf.as_mut_ptr(), stride) },
             "페이지 비트맵",
         )?);
         unsafe { FPDF_RenderPageBitmap(bmp.0, self.h, 0, 0, w, h, 0, 1 | 0x10) };

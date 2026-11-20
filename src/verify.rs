@@ -93,10 +93,16 @@ pub fn run(dir: &Path) -> Result<()> {
             ensure!(std::fs::read_dir(target)?.count() == 1);
         }
         passed.push("이미지 삽입·PDF 생성·PNG 및 JPEG 내보내기");
+        crate::app::verify_image_modes()?;
+        passed.push("이미지 모드의 클릭·드래그, 원본 픽셀 크기 한 줄 표시·창 가장자리 배치, 보기·편집 우클릭 내보내기");
+        verify_picture_replacement(tmp.path())?;
+        passed.push(
+            "회전·클리핑·겹침·공유 이미지 개별 교체·원본 해상도 PNG 내보내기·투명도·저장·실행 취소",
+        );
         crate::app::verify_page_scroll()?;
         passed.push("연속 휠·프레임 내 합산·방향 반전·첫 프레임 즉시 전환·두 페이지·정밀 스크롤·축소 및 DPI별 픽셀 정렬");
         crate::app::verify_controls(&file)?;
-        passed.push("화면 맞춤·휠 줌/스크롤·두 페이지·검색 단축키·책갈피 패널 경계");
+        passed.push("화면 맞춤·휠 줌/스크롤·두 페이지·연속 Enter/Shift+Enter 검색 순환·한영 글꼴 검색과 선택·문구별 실행 취소와 다시 실행·책갈피 패널 경계");
         let second = tmp.path().join("여러 쪽.pdf");
         std::fs::write(&second, s.doc.bytes()?)?;
         crate::app::verify_tabs_and_outline(&file, &second)?;
@@ -181,6 +187,119 @@ pub fn run(dir: &Path) -> Result<()> {
         std::fs::write(dir.join("rust-verification.txt"), passed.join("\n"))?;
     }
     result
+}
+
+fn verify_picture_replacement(tmp: &Path) -> Result<()> {
+    use lopdf::{dictionary, Dictionary, Stream};
+    let mut fixture = lopdf::Document::load_mem(&Document::blank()?.bytes()?)?;
+    let pid = fixture.get_pages()[&1];
+    let photo = fixture.add_object(Stream::new(
+        dictionary! {
+            "Type"=>"XObject", "Subtype"=>"Image", "ColorSpace"=>"DeviceRGB",
+            "Width"=>1,"Height"=>1,"BitsPerComponent"=>8
+        },
+        vec![200, 20, 30],
+    ));
+    let form = fixture.add_object(Stream::new(dictionary! {
+        "Type"=>"XObject", "Subtype"=>"Form", "BBox"=>vec![0.into(),0.into(),80.into(),40.into()],
+        "Resources"=>dictionary!{"XObject"=>dictionary!{"Photo"=>photo}}
+    }, b"q 4 0 72 40 re W n 80 0 0 40 0 0 cm /Photo Do Q 0 g 37 18 6 4 re f".to_vec()));
+    let content = fixture.add_object(Stream::new(
+        Dictionary::new(),
+        b"q 0 1 -1 0 120 100 cm /Tile Do Q q 1 0 0 1 170 100 cm /Tile Do Q".to_vec(),
+    ));
+    let dict = fixture.get_dictionary_mut(pid)?;
+    dict.set(
+        "Resources",
+        dictionary! {"XObject"=>dictionary!{"Tile"=>form}},
+    );
+    dict.set("Contents", content);
+    let mut data = vec![];
+    fixture.save_to(&mut data)?;
+    let mut session = Session::open(data, None, String::new())?;
+    let page = session.doc.page(0)?;
+    let targets = crate::pictures::placements(&fixture, 0, &page)?;
+    ensure!(
+        targets.len() == 2
+            && targets[0].contains(page.display(100., 120.))
+            && !targets[0].contains(page.display(100., 102.)),
+        "회전과 클리핑 영역 선택"
+    );
+    let original = page.render(1.)?;
+    drop(page);
+    let exported = tmp.join("개별 이미지.png");
+    ensure!(targets[0].pixels == [1, 1], "이미지 자체의 픽셀 크기");
+    session.export_picture(0, &targets[0], &exported)?;
+    let png = image::open(&exported)?.into_rgba8();
+    ensure!(
+        png.dimensions() == (1, 1) && png.get_pixel(0, 0).0 == [200, 20, 30, 255],
+        "회전되고 잘린 사진의 원본 픽셀 추출"
+    );
+    let mut replacement = image::RgbaImage::from_fn(40, 40, |x, y| {
+        image::Rgba(if !(10..30).contains(&y) {
+            [0, 0, 255, 255]
+        } else if x > 29 {
+            [0, 210, 0, 128]
+        } else {
+            [0, 210, 0, 255]
+        })
+    });
+    replacement.put_pixel(1, 11, image::Rgba([211, 43, 51, 255]));
+    replacement.put_pixel(3, 27, image::Rgba([55, 127, 193, 255]));
+    let expected = image::imageops::crop_imm(&replacement, 0, 10, 40, 20).to_image();
+    session.replace_picture(0, &targets[0], &replacement.into())?;
+    let saved = tmp.join("교체.pdf");
+    session.save(&saved)?;
+    let reopened = Document::open(std::fs::read(saved)?, "")?;
+    let page = reopened.page(0)?;
+    let result = page.render(1.)?;
+    let source = crate::pictures::open(session.bytes(), &session.password)?;
+    let updated = crate::pictures::placements(&source, 0, &page)?;
+    ensure!(
+        updated[0].pixels == [40, 20],
+        "교체한 이미지의 비정사각 픽셀 크기"
+    );
+    session.export_picture(0, &updated[0], &exported)?;
+    let extracted = image::open(&exported)?.into_rgba8();
+    ensure!(
+        extracted == expected,
+        "원본 방향·해상도·투명도 픽셀 검증: {:?} / {:?}",
+        extracted.get_pixel(39, 10),
+        expected.get_pixel(39, 10)
+    );
+    ensure!(!session.dirty(), "이미지 내보내기 후 문서 상태");
+    let pixel = |x, y| {
+        let p = page.display(x, y);
+        result.get_pixel(p.x as u32, p.y as u32).0
+    };
+    ensure!(
+        pixel(100., 120.)[..3] == [0, 210, 0] && pixel(100., 140.)[..3] == [0, 0, 0],
+        "교체된 이미지와 위쪽 개체 순서"
+    );
+    ensure!(
+        pixel(82., 120.)[..3] == [0, 210, 0] && pixel(118., 120.)[..3] == [0, 210, 0],
+        "중앙 자르기"
+    );
+    let translucent = pixel(100., 167.);
+    ensure!(
+        translucent[0] > 100 && translucent[0] < 155 && translucent[1] > 210,
+        "교체 이미지 투명도"
+    );
+    ensure!(
+        pixel(100., 102.)[..3] == [255, 255, 255] && pixel(190., 120.)[..3] == [200, 20, 30],
+        "클리핑과 재사용된 사진 보존"
+    );
+    let area = targets[0].bounds().expand(1.);
+    for (x, y, p) in result.enumerate_pixels() {
+        if !area.contains(pos2(x as f32, y as f32)) {
+            ensure!(original.get_pixel(x, y) == p, "교체 영역 밖 픽셀 보존");
+        }
+    }
+    session.undo(false)?;
+    ensure!(session.doc.page(0)?.render(1.)? == original);
+    session.undo(true)?;
+    ensure!(session.doc.page(0)?.render(1.)? == result);
+    Ok(())
 }
 
 pub struct WindowCheck {

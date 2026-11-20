@@ -7,6 +7,8 @@ pub struct Face {
     pub style: String,
     pub path: PathBuf,
     pub index: u32,
+    pub label: String,
+    search_key: String,
 }
 static FONTS: OnceLock<Vec<Face>> = OnceLock::new();
 pub fn all() -> &'static [Face] {
@@ -44,9 +46,37 @@ pub fn all() -> &'static [Face] {
                             .find_map(|n| n.to_string())
                     };
                     if let Some(family) = name(16).or_else(|| name(1)) {
+                        let style = name(17).or_else(|| name(2)).unwrap_or_default();
+                        let names: Vec<_> = face
+                            .names()
+                            .into_iter()
+                            .filter(|n| matches!(n.name_id, 1 | 2 | 4 | 6 | 16 | 17))
+                            .filter_map(|n| Some((n.name_id, n.language_id, n.to_string()?)))
+                            .collect();
+                        let korean = |id| {
+                            names
+                                .iter()
+                                .find(|(kind, lang, _)| *kind == id && *lang == 0x0412)
+                                .map(|(_, _, s)| s.as_str())
+                        };
+                        let display_family = korean(16).or_else(|| korean(1)).unwrap_or(&family);
+                        let display_style = korean(17).or_else(|| korean(2)).unwrap_or(&style);
+                        let label = format!("{display_family} {display_style}")
+                            .trim()
+                            .to_owned();
+                        let mut aliases =
+                            vec![normalized(&label), normalized(&format!("{family} {style}"))];
+                        aliases.extend(names.iter().map(|(_, _, s)| normalized(s)));
+                        aliases.push(normalized(
+                            &path.file_stem().unwrap_or_default().to_string_lossy(),
+                        ));
+                        aliases.sort();
+                        aliases.dedup();
                         out.push(Face {
                             family,
-                            style: name(17).or_else(|| name(2)).unwrap_or_default(),
+                            style,
+                            label,
+                            search_key: aliases.join(" "),
                             path: path.clone(),
                             index,
                         })
@@ -57,6 +87,30 @@ pub fn all() -> &'static [Face] {
         out.sort_by(|a, b| a.family.cmp(&b.family).then(a.style.cmp(&b.style)));
         out
     })
+}
+fn normalized(s: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    s.nfkc()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+pub fn matches(query: &str) -> Vec<&'static Face> {
+    let terms: Vec<_> = query
+        .split_whitespace()
+        .map(normalized)
+        .filter(|s| !s.is_empty())
+        .collect();
+    all()
+        .iter()
+        .filter(|f| {
+            f.index == 0
+                && f.path
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("ttf") || e.eq_ignore_ascii_case("otf"))
+        })
+        .filter(|f| terms.iter().all(|q| f.search_key.contains(q)))
+        .collect()
 }
 pub fn find(name: &str, bold: bool, italic: bool) -> Option<&'static Face> {
     let key = |s: &str| {

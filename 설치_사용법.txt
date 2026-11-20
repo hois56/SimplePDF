@@ -1,6 +1,6 @@
-﻿SimplePDF 1.0 설치 및 기본 앱 설정
+﻿SimplePDF 1.0.1 설치 및 기본 앱 설정
 
-1. SimplePDF-Setup-1.0.exe를 실행해 설치합니다.
+1. SimplePDF-Setup-1.0.1.exe를 실행해 설치합니다.
 2. 설치 완료 화면에서 'PDF 기본 앱 설정 열기'를 선택합니다.
 3. Windows 기본 앱 설정에서 .pdf를 'SimplePDF'로 지정합니다.
 

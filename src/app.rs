@@ -19,7 +19,8 @@ enum Mode {
     View,
     Edit,
     Text,
-    Image,
+    AddImage,
+    EditImage,
 }
 impl Mode {
     fn label(self) -> &'static str {
@@ -27,7 +28,8 @@ impl Mode {
             Self::View => "보기",
             Self::Edit => "문구 수정",
             Self::Text => "텍스트 추가",
-            Self::Image => "이미지 추가",
+            Self::AddImage => "이미지 추가",
+            Self::EditImage => "이미지 편집",
         }
     }
 }
@@ -48,6 +50,9 @@ enum Cmd {
     Delete,
     Export(&'static str),
     Images,
+    InsertImage(usize, Rect),
+    ReplaceImage(usize, crate::pictures::Picture),
+    ExportPicture(usize, usize, crate::pictures::Picture),
     Office,
     Bookmark(Option<usize>),
     Rename(usize),
@@ -118,6 +123,13 @@ struct DocumentTab {
     edit_error: String,
     drag: Option<(usize, Pos2)>,
     chosen_face: String,
+    font_query: String,
+    font_picker: bool,
+    font_cursor: usize,
+    original_editor_font: Option<std::sync::Arc<FontData>>,
+    pictures: HashMap<usize, Result<Vec<crate::pictures::Picture>, String>>,
+    picture_source: Option<lopdf::Document>,
+    picture_menu: Option<(usize, usize, crate::pictures::Picture)>,
     edit_base: Option<Vec<u8>>,
     base_fonts: FontDefinitions,
     editor_font: Option<std::sync::Arc<FontData>>,
@@ -193,6 +205,13 @@ impl DocumentTab {
             edit_error: String::new(),
             drag: None,
             chosen_face: String::new(),
+            font_query: String::new(),
+            font_picker: false,
+            font_cursor: 0,
+            original_editor_font: None,
+            pictures: HashMap::new(),
+            picture_source: None,
+            picture_menu: None,
             edit_base: None,
             base_fonts: defs,
             editor_font: None,
@@ -240,6 +259,11 @@ impl DocumentTab {
         self.surfaces.clear();
         self.layouts.clear();
         self.toc.clear();
+        self.pictures.clear();
+        self.picture_source = None;
+        self.picture_menu = None;
+        self.font_picker = false;
+        self.original_editor_font = None;
         self.preview = None;
         self.edit_base = None;
         self.edit = None;
@@ -347,6 +371,8 @@ impl DocumentTab {
         Ok(())
     }
     fn cancel_edit(&mut self) {
+        self.font_picker = false;
+        self.original_editor_font = None;
         self.edit = None;
         self.preview = None;
         self.edit_base = None;
@@ -410,6 +436,12 @@ impl DocumentTab {
                 "편집 권한이 제한되어 있습니다."
             )
         }
+        if m != Mode::EditImage {
+            self.picture_source = None;
+            self.pictures.clear();
+        }
+        self.drag = None;
+        self.picture_menu = None;
         self.mode = m;
         self.props = matches!(m, Mode::Edit | Mode::Text);
         Ok(())
@@ -475,6 +507,51 @@ impl DocumentTab {
                 self.commit()?;
                 self.session()?;
                 self.ask(Prompt::Pages(kind), "");
+            }
+            Cmd::InsertImage(page, rect) => {
+                if let Some(img) = Self::pick_image("선택 영역에 이미지 추가")? {
+                    let fit = crate::pictures::fill_frame(&img, rect.size());
+                    self.apply(|d| d.page(page)?.add_image(rect, &fit))?;
+                }
+            }
+            Cmd::ExportPicture(page, index, picture) => {
+                let s = self.session()?;
+                ensure!(
+                    s.doc.extractable(),
+                    "이 PDF는 이미지 추출 권한이 제한되어 있습니다."
+                );
+                let stem = s
+                    .path
+                    .as_ref()
+                    .and_then(|p| p.file_stem())
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("문서");
+                let name = format!("{stem}-{}쪽-이미지{}.png", page + 1, index + 1);
+                if let Some(mut path) = rfd::FileDialog::new()
+                    .set_title("이미지 내보내기")
+                    .add_filter("PNG 이미지", &["png"])
+                    .set_file_name(name)
+                    .save_file()
+                {
+                    if path.extension().is_none() {
+                        path.set_extension("png");
+                    }
+                    ensure!(
+                        path.extension()
+                            .is_some_and(|e| e.eq_ignore_ascii_case("png")),
+                        "파일 확장자를 .png로 지정해 주세요."
+                    );
+                    s.export_picture(page, &picture, &path)?;
+                }
+            }
+            Cmd::ReplaceImage(page, picture) => {
+                if let Some(image) = Self::pick_image("선택한 이미지 교체")? {
+                    self.doc
+                        .as_mut()
+                        .context("문서")?
+                        .replace_picture(page, &picture, &image)?;
+                    self.invalidate();
+                }
             }
             Cmd::Images => {
                 if let Some(paths) = rfd::FileDialog::new()
@@ -737,7 +814,13 @@ impl DocumentTab {
                             .selected_text(self.mode.label())
                             .width(82.)
                             .show_ui(ui, |ui| {
-                                for m in [Mode::View, Mode::Edit, Mode::Text, Mode::Image] {
+                                for m in [
+                                    Mode::View,
+                                    Mode::Edit,
+                                    Mode::Text,
+                                    Mode::AddImage,
+                                    Mode::EditImage,
+                                ] {
                                     if ui.selectable_label(m == self.mode, m.label()).clicked() {
                                         if let Err(e) = self.choose_mode(m) {
                                             self.error = e.to_string()
@@ -941,93 +1024,174 @@ impl DocumentTab {
                 }
             });
     }
-    fn properties(&mut self, ctx: &egui::Context) {
-        SidePanel::right("properties")
-            .default_width(196.)
-            .width_range(156. ..=300.)
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.strong("텍스트");
-                    ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                        if icon(ui, "close", "속성 닫기", false).clicked() {
-                            self.props = false;
-                        }
-                    });
-                });
-                ui.separator();
-                if let Some(e) = &mut self.edit {
-                    let mut changed = false;
-                    ui.label("글꼴");
-                    let family = e
-                        .runs
-                        .first()
-                        .map(|r| r.family.as_str())
-                        .unwrap_or("맑은 고딕");
-                    let selected = if self.chosen_face.is_empty() {
-                        family
-                    } else {
-                        &self.chosen_face
-                    };
-                    ComboBox::from_id_salt("font")
-                        .selected_text(selected)
-                        .width(ui.available_width() - 5.)
-                        .show_ui(ui, |ui| {
-                            if ui
-                                .selectable_label(e.style.font.is_none(), "원본 글꼴")
-                                .clicked()
-                            {
-                                e.style.font = None;
-                                self.chosen_face.clear();
-                                changed = true
-                            }
-                            for f in fonts::all().iter().filter(|f| {
-                                f.index == 0
-                                    && f.path.extension().is_some_and(|e| {
-                                        e.eq_ignore_ascii_case("ttf")
-                                            || e.eq_ignore_ascii_case("otf")
-                                    })
-                            }) {
-                                let n = format!("{} {}", f.family, f.style);
-                                if ui.selectable_label(self.chosen_face == n, &n).clicked() {
-                                    e.style.font = Some(f.path.clone());
-                                    self.chosen_face = n;
-                                    changed = true
-                                }
-                            }
-                        });
-                    ui.label("크기");
-                    changed |= ui
-                        .add(
-                            DragValue::new(&mut e.style.size)
-                                .speed(0.25)
-                                .range(1. ..=400.)
-                                .suffix(" pt"),
-                        )
-                        .changed();
-                    ui.label("색상");
-                    changed |= ui.color_edit_button_srgb(&mut e.style.rgb).changed();
-                    if changed {
-                        self.update_preview();
-                    }
-                    if !self.edit_error.is_empty() {
-                        ui.colored_label(Color32::DARK_RED, &self.edit_error);
-                    }
-                    ui.horizontal(|ui| {
-                        if ui.button("적용").clicked() {
-                            if let Err(e) = self.commit() {
-                                self.error = e.to_string()
-                            }
-                        }
-                        if ui.button("취소").clicked() {
-                            self.cancel_edit()
-                        }
-                    });
-                }
-            });
-    }
 }
+include!("properties.rs");
 include!("view.rs");
 include!("tabs.rs");
+pub fn verify_image_modes() -> Result<()> {
+    let ctx = egui::Context::default();
+    let cc = eframe::CreationContext::_new_kittest(ctx.clone());
+    let mut app = App::new(&cc, vec![]);
+    let tab = &mut app.tabs[0];
+    let doc = Document::blank()?;
+    let rect = Rect::from_min_size(pos2(80., 100.), vec2(150., 110.));
+    let bitmap = image::DynamicImage::new_rgb8(8, 5);
+    doc.page(0)?.add_image(rect, &bitmap)?;
+    let other = Rect::from_min_size(pos2(320., 465.), vec2(18., 90.));
+    doc.page(0)?
+        .add_image(other, &image::DynamicImage::new_rgb8(1158, 793))?;
+    tab.install_doc(Session::open(doc.bytes()?, None, String::new())?);
+    let draw = |tab: &mut DocumentTab, events: Vec<Event>| {
+        let input = RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1080., 720.))),
+            events,
+            ..Default::default()
+        };
+        ctx.run(input, |ctx| tab.draw(ctx, &[], 0, &mut false))
+    };
+    let tick = |tab: &mut DocumentTab, events: Vec<Event>| {
+        let _ = draw(tab, events);
+        tab.cmd.take()
+    };
+    let check_pixel_label = |output: &FullOutput, label: &str| -> Result<()> {
+        let (text, clip) = output
+            .shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                Shape::Text(t) if t.galley.job.text == label => Some((t, s.clip_rect)),
+                _ => None,
+            })
+            .context("이미지 픽셀 표시 누락")?;
+        let bounds = Rect::from_min_size(text.pos, text.galley.size());
+        ensure!(
+            text.galley.rows.len() == 1,
+            "{label} 줄 수: {}",
+            text.galley.rows.len()
+        );
+        ensure!(
+            clip.intersect(ctx.screen_rect()).contains_rect(bounds),
+            "{label} 표시가 창 밖으로 잘림: {bounds:?}"
+        );
+        Ok(())
+    };
+    let label_position = |output: &FullOutput, label: &str| {
+        output.shapes.iter().find_map(|s| match &s.shape {
+            Shape::Text(t) if t.galley.job.text == label => Some(t.pos + t.galley.size() * 0.5),
+            _ => None,
+        })
+    };
+    let gesture = |tab: &mut DocumentTab, from: Pos2, to: Pos2| {
+        let button = |pos, pressed| Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        tick(tab, vec![Event::PointerMoved(from)]);
+        tick(tab, vec![button(from, true)]);
+        if from != to {
+            tick(tab, vec![Event::PointerMoved(to)]);
+        }
+        tick(tab, vec![button(to, false)])
+    };
+    tab.choose_mode(Mode::EditImage)?;
+    tick(tab, vec![]);
+    tick(tab, vec![]);
+    let layout = tab.row_layout(0, tab.view)?;
+    let r = layout.visible_pages(tab.view, tab.pan, ctx.pixels_per_point())[0].rect;
+    let screen = |p: Pos2| r.min + p.to_vec2() * layout.scale;
+    let center = screen(rect.center());
+    let blank = screen(pos2(330., 340.));
+    let end = screen(pos2(420., 430.));
+    tick(tab, vec![Event::PointerMoved(center)]);
+    let hovered = draw(tab, vec![]);
+    check_pixel_label(&hovered, "8 × 5 px")?;
+    let next = draw(tab, vec![Event::PointerMoved(screen(other.center()))]);
+    let long_label = "1158 × 793 px";
+    check_pixel_label(&next, long_label)?;
+    ensure!(
+        label_position(&next, "8 × 5 px").is_none(),
+        "가리키는 이미지에 따라 크기 변경"
+    );
+    tab.change_zoom(1.5);
+    tick(tab, vec![]);
+    let zoomed = tab.row_layout(0, tab.view)?;
+    let origin = zoomed.visible_pages(tab.view, tab.pan, ctx.pixels_per_point())[0]
+        .rect
+        .min;
+    let frame = draw(
+        tab,
+        vec![Event::PointerMoved(
+            origin + other.center().to_vec2() * zoomed.scale,
+        )],
+    );
+    check_pixel_label(&frame, long_label)?;
+    let short = origin + rect.center().to_vec2() * zoomed.scale;
+    let previous = draw(tab, vec![Event::PointerMoved(short)]);
+    check_pixel_label(&previous, "8 × 5 px")?;
+    tab.change_zoom(4.);
+    let enlarged = tab.row_layout(0, tab.view)?;
+    let page = enlarged.visible_pages(tab.view, Vec2::ZERO, ctx.pixels_per_point())[0].rect;
+    let corner = tab.view.right_bottom() - vec2(16., 6.);
+    tab.pan = corner - (page.min + other.center().to_vec2() * enlarged.scale);
+    let edge = draw(tab, vec![Event::PointerMoved(corner)]);
+    check_pixel_label(&edge, long_label)?;
+    tab.execute(Cmd::Fit)?;
+    tick(tab, vec![]);
+    let away = draw(tab, vec![Event::PointerMoved(blank)]);
+    ensure!(
+        label_position(&away, long_label).is_none(),
+        "이미지 밖에서 크기 표시 닫기"
+    );
+    ensure!(
+        matches!(gesture(tab,center,center),Some(Cmd::ReplaceImage(0,p)) if p.contains(rect.center())),
+        "기존 사진 클릭으로 교체"
+    );
+    ensure!(
+        gesture(tab, blank, blank).is_none()
+            && gesture(tab, blank, end).is_none()
+            && gesture(tab, center, end).is_none(),
+        "이미지 편집의 빈 곳 클릭과 드래그"
+    );
+    tab.choose_mode(Mode::AddImage)?;
+    tick(tab, vec![]);
+    ensure!(
+        gesture(tab, center, center).is_none(),
+        "이미지 추가의 기존 사진 클릭"
+    );
+    ensure!(
+        matches!(gesture(tab,blank,end),Some(Cmd::InsertImage(0,area)) if area.min.distance(pos2(330.,340.))<0.1 && area.max.distance(pos2(420.,430.))<0.1),
+        "드래그 영역에만 이미지 추가"
+    );
+    for (mode, center, number, pixels) in [
+        (Mode::View, center, 0, [8, 5]),
+        (Mode::EditImage, screen(other.center()), 1, [1158, 793]),
+    ] {
+        tab.choose_mode(mode)?;
+        tick(tab, vec![Event::PointerMoved(center)]);
+        for pressed in [true, false] {
+            tick(
+                tab,
+                vec![Event::PointerButton {
+                    pos: center,
+                    button: PointerButton::Secondary,
+                    pressed,
+                    modifiers: Modifiers::NONE,
+                }],
+            );
+        }
+        let menu = draw(tab, vec![]);
+        let item =
+            label_position(&menu, "이미지 내보내기…").context("사진 우클릭 내보내기 메뉴")?;
+        ensure!(
+            matches!(gesture(tab,item,item),Some(Cmd::ExportPicture(0,idx,p)) if idx==number && p.pixels==pixels),
+            "우클릭한 사진 내보내기"
+        );
+        tick(tab, vec![]);
+    }
+    ensure!(tab.error.is_empty(), "이미지 도구 오류: {}", tab.error);
+    Ok(())
+}
 pub fn verify_controls(path: &Path) -> Result<()> {
     use eframe::App as _;
     let ctx = egui::Context::default();
@@ -1076,19 +1240,49 @@ pub fn verify_controls(path: &Path) -> Result<()> {
         &mut frame,
     );
     ensure!(app.tabs[0].pan.y < 0., "확대 후 스크롤");
-    let key = |k| {
-        vec![Event::Key {
-            key: k,
-            physical_key: Some(k),
-            pressed: true,
-            repeat: false,
-            modifiers: Modifiers::COMMAND,
-        }]
+    let press = |app: &mut App, key, modifiers, frame: &mut eframe::Frame| {
+        let events = [true, false]
+            .into_iter()
+            .map(|pressed| Event::Key {
+                key,
+                physical_key: Some(key),
+                pressed,
+                repeat: false,
+                modifiers,
+            })
+            .collect();
+        tick(app, events, modifiers, frame);
     };
-    tick(&mut app, key(Key::Num2), Modifiers::COMMAND, &mut frame);
+    press(&mut app, Key::Num2, Modifiers::COMMAND, &mut frame);
     ensure!(app.tabs[0].spread, "두 페이지 전환");
-    tick(&mut app, key(Key::F), Modifiers::COMMAND, &mut frame);
+    press(&mut app, Key::F, Modifiers::COMMAND, &mut frame);
     ensure!(app.tabs[0].find.open, "검색창");
+    tick(
+        &mut app,
+        vec![Event::Text("p".into())],
+        Modifiers::NONE,
+        &mut frame,
+    );
+    app.tabs[0].find.deadline = Instant::now();
+    tick(&mut app, vec![], Modifiers::NONE, &mut frame);
+    ensure!(
+        app.tabs[0].find.found.len() == 2 && app.tabs[0].find.active == 0,
+        "검색 결과 두 건"
+    );
+    for (modifiers, expected) in [
+        (Modifiers::NONE, 1),
+        (Modifiers::NONE, 0),
+        (Modifiers::NONE, 1),
+        (Modifiers::SHIFT, 0),
+        (Modifiers::SHIFT, 1),
+    ] {
+        press(&mut app, Key::Enter, modifiers, &mut frame);
+        ensure!(app.tabs[0].find.active == expected, "연속 Enter 검색 순서");
+        ensure!(
+            ctx.memory(|m| m.has_focus(Id::new(("search_entry", app.tabs[0].id)))),
+            "Enter로 검색 결과 이동 후 입력 포커스 유지"
+        );
+    }
     app.tabs[0].find.open = false;
     app.tabs[0].execute(Cmd::Fit)?;
     app.tabs[0].spread = false;
@@ -1101,28 +1295,77 @@ pub fn verify_controls(path: &Path) -> Result<()> {
     drop(page);
     let top_left = app.tabs[0].view.center() - size * app.tabs[0].scale * 0.5;
     let pt = top_left + run.rect.center().to_vec2() * app.tabs[0].scale;
-    for down in [true, false] {
-        tick(
-            &mut app,
-            vec![
-                Event::PointerMoved(pt),
-                Event::PointerButton {
-                    pos: pt,
-                    button: PointerButton::Primary,
-                    pressed: down,
-                    modifiers: Modifiers::NONE,
-                },
-            ],
-            Modifiers::NONE,
-            &mut frame,
-        );
-    }
+    let click = |app: &mut App, pt: Pos2, frame: &mut eframe::Frame| {
+        for down in [true, false] {
+            tick(
+                app,
+                vec![
+                    Event::PointerMoved(pt),
+                    Event::PointerButton {
+                        pos: pt,
+                        button: PointerButton::Primary,
+                        pressed: down,
+                        modifiers: Modifiers::NONE,
+                    },
+                ],
+                Modifiers::NONE,
+                frame,
+            );
+        }
+    };
+    click(&mut app, pt, &mut frame);
     ensure!(
         app.tabs[0]
             .edit
             .as_ref()
             .is_some_and(|e| e.text == run.text),
         "행 클릭과 인라인 커서"
+    );
+    tick(&mut app, vec![], Modifiers::NONE, &mut frame);
+    let family = Id::new(("font_family", app.tabs[0].id));
+    let chooser = ctx
+        .read_response(family)
+        .context("글꼴 선택 버튼")?
+        .rect
+        .center();
+    click(&mut app, chooser, &mut frame);
+    tick(
+        &mut app,
+        vec![Event::Text("MALgun".into())],
+        Modifiers::NONE,
+        &mut frame,
+    );
+    let matches = fonts::matches(&app.tabs[0].font_query);
+    ensure!(
+        app.tabs[0].font_picker && app.tabs[0].font_query == "MALgun" && matches.len() > 1,
+        "영문 글꼴 검색"
+    );
+    ensure!(
+        fonts::matches("맑은 고딕")
+            .iter()
+            .any(|f| f.path == matches[0].path),
+        "한글 글꼴 이름 검색"
+    );
+    press(&mut app, Key::ArrowDown, Modifiers::NONE, &mut frame);
+    press(&mut app, Key::Enter, Modifiers::NONE, &mut frame);
+    ensure!(
+        !app.tabs[0].font_picker
+            && app.tabs[0]
+                .edit
+                .as_ref()
+                .is_some_and(
+                    |e| e.style.font.as_ref() == Some(&matches[1].path) && e.text == run.text
+                ),
+        "검색한 글꼴 선택과 본문 포커스"
+    );
+    click(&mut app, chooser, &mut frame);
+    press(&mut app, Key::Enter, Modifiers::NONE, &mut frame);
+    ensure!(
+        app.tabs[0]
+            .edit
+            .as_ref()
+            .is_some_and(|e| e.style.font.is_none()),
+        "원본 글꼴 복원"
     );
     tick(
         &mut app,
@@ -1151,6 +1394,68 @@ pub fn verify_controls(path: &Path) -> Result<()> {
         app.tabs[0].edit.is_none()
             && app.tabs[0].session()?.doc.page(0)?.layout()?.runs[0].text == edited,
         "직접 편집 적용"
+    );
+    let second = Edit {
+        page: 0,
+        runs: vec![],
+        rect: Rect::from_min_size(pos2(50., 180.), vec2(240., 40.)),
+        text: "두 번째 문구".into(),
+        style: Style {
+            size: 16.,
+            rgb: [0; 3],
+            font: None,
+        },
+    };
+    app.tabs[0].apply(|d| d.page(0)?.edit(&second))?;
+    tick(&mut app, vec![], Modifiers::NONE, &mut frame);
+    let other = app.tabs[0]
+        .session()?
+        .doc
+        .page(0)?
+        .layout()?
+        .runs
+        .into_iter()
+        .find(|r| r.text == second.text)
+        .context("다른 행")?;
+    let other_pt = top_left + other.rect.center().to_vec2() * app.tabs[0].scale;
+    click(&mut app, other_pt, &mut frame);
+    let active_text = |app: &App| app.tabs[0].edit.as_ref().map(|e| e.text.clone());
+    ensure!(
+        active_text(&app).as_deref() == Some(second.text.as_str()),
+        "두 번째 행 선택"
+    );
+    press(&mut app, Key::Z, Modifiers::COMMAND, &mut frame);
+    ensure!(
+        active_text(&app).as_deref() == Some(second.text.as_str()),
+        "편집을 시작한 행에 이전 행의 실행 취소 기록이 들어왔습니다."
+    );
+    tick(
+        &mut app,
+        vec![Event::Text("B".into())],
+        Modifiers::NONE,
+        &mut frame,
+    );
+    let changed = active_text(&app).context("두 번째 문구 입력")?;
+    ensure!(changed.contains('B'));
+    for _ in 0..3 {
+        press(&mut app, Key::Z, Modifiers::COMMAND, &mut frame);
+        ensure!(
+            active_text(&app).as_deref() == Some(second.text.as_str()),
+            "연속 실행 취소 시 현재 행 유지"
+        );
+    }
+    press(&mut app, Key::Y, Modifiers::COMMAND, &mut frame);
+    ensure!(
+        active_text(&app).as_deref() == Some(changed.as_str()),
+        "현재 행 다시 실행"
+    );
+    press(&mut app, Key::Enter, Modifiers::NONE, &mut frame);
+    tick(&mut app, vec![], Modifiers::NONE, &mut frame);
+    press(&mut app, Key::Z, Modifiers::COMMAND, &mut frame);
+    let lines = app.tabs[0].session()?.doc.page(0)?.layout()?.runs;
+    ensure!(
+        lines.iter().any(|r| r.text == edited) && lines.iter().any(|r| r.text == second.text),
+        "확정 후 문서 실행 취소 범위"
     );
     let bookmarks = &mut app.tabs[0].doc.as_mut().unwrap().bookmarks;
     for i in 0..80 {

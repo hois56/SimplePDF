@@ -7,10 +7,10 @@ use lopdf::{
 };
 use std::collections::{HashMap, HashSet};
 
-fn dict<'a>(d: &'a Document, v: &'a Object) -> Option<&'a Dictionary> {
+pub(crate) fn dict<'a>(d: &'a Document, v: &'a Object) -> Option<&'a Dictionary> {
     d.dereference(v).ok()?.1.as_dict().ok()
 }
-fn resources(d: &Document, mut page: ObjectId) -> Result<Dictionary> {
+pub(crate) fn resources(d: &Document, mut page: ObjectId) -> Result<Dictionary> {
     let mut seen = HashSet::new();
     while seen.insert(page) {
         let node = d.get_dictionary(page)?;

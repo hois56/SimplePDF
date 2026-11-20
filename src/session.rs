@@ -72,6 +72,36 @@ impl Session {
         d.page(edit.page)?.edit(edit)?;
         self.replace(d.bytes()?)
     }
+    pub fn export_picture(
+        &self,
+        page: usize,
+        picture: &crate::pictures::Picture,
+        path: &Path,
+    ) -> Result<()> {
+        ensure!(
+            self.doc.extractable(),
+            "이 PDF는 이미지 추출 권한이 제한되어 있습니다."
+        );
+        crate::pictures::export_png(
+            crate::pictures::open(self.bytes(), &self.password)?,
+            page,
+            picture,
+            path,
+        )
+    }
+    pub fn replace_picture(
+        &mut self,
+        number: usize,
+        picture: &crate::pictures::Picture,
+        image: &image::DynamicImage,
+    ) -> Result<()> {
+        ensure!(
+            self.doc.editable(),
+            "이 PDF는 편집 권한이 제한되어 있습니다."
+        );
+        let work = crate::pictures::open(self.bytes(), &self.password)?;
+        self.replace(crate::pictures::replace(work, number, picture, image)?)
+    }
     fn replace(&mut self, data: Vec<u8>) -> Result<()> {
         let doc = Document::open(data.clone(), &self.password)?;
         ensure!(

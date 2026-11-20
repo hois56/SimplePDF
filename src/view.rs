@@ -58,6 +58,7 @@ impl DocumentTab {
                     ui.horizontal(|ui| {
                         let res = ui.add(
                             TextEdit::singleline(&mut self.find.query)
+                                .return_key(None)
                                 .id(Id::new(("search_entry", self.id)))
                                 .hint_text("문서 검색")
                                 .desired_width((width - 154.).max(32.)),
@@ -131,6 +132,15 @@ impl DocumentTab {
     fn shortcuts(&mut self, ctx: &egui::Context, full: &mut bool) -> Result<()> {
         let key = |k| ctx.input(|i| i.key_pressed(k));
         let m = ctx.input(|i| i.modifiers);
+        if self.props
+            && self.font_picker
+            && self.edit.is_some()
+            && self.prompt.is_none()
+            && self.error.is_empty()
+            && (key(Key::Escape) || key(Key::Enter))
+        {
+            return Ok(());
+        }
         if key(Key::Escape) {
             if self.prompt.is_some() {
                 self.prompt = None
@@ -163,7 +173,12 @@ impl DocumentTab {
             self.search_step(if m.shift { -1 } else { 1 })?;
             return Ok(());
         }
-        if self.edit.is_some() && key(Key::Enter) && (self.mode == Mode::Edit || m.command) {
+        if self.edit.is_some()
+            && key(Key::Enter)
+            && (m.command
+                || (self.mode == Mode::Edit
+                    && ctx.memory(|m| m.has_focus(Id::new(("inline_text", self.id))))))
+        {
             self.commit()?;
             return Ok(());
         }
@@ -202,7 +217,14 @@ impl DocumentTab {
                 (Key::V, Mode::View),
                 (Key::E, Mode::Edit),
                 (Key::T, Mode::Text),
-                (Key::I, Mode::Image),
+                (
+                    Key::I,
+                    if m.shift {
+                        Mode::AddImage
+                    } else {
+                        Mode::EditImage
+                    },
+                ),
             ] {
                 if key(k) {
                     self.choose_mode(mode)?
@@ -306,6 +328,8 @@ impl DocumentTab {
             }
             self.cursor_at = Some(at);
         }
+        self.original_editor_font = self.editor_font.clone();
+        self.font_picker = false;
         self.chosen_face.clear();
         self.page = p;
         self.page_text = (p + 1).to_string();
@@ -354,13 +378,18 @@ impl DocumentTab {
             .map(|r| r.matrix.a.hypot(r.matrix.b))
             .unwrap_or(1.);
         let font = FontId::new((e.style.size * transform * scale).clamp(3., 220.), family);
+        let id = Id::new(("inline_text", self.id));
+        if self.cursor_at.is_some() {
+            // Each opened text range starts its own undo history, selection and IME state.
+            egui::text_edit::TextEditState::default().store(ui.ctx(), id);
+        }
         let mut field = if e.runs.is_empty() {
             TextEdit::multiline(&mut e.text)
         } else {
             TextEdit::singleline(&mut e.text)
         };
         field = field
-            .id(Id::new(("inline_text", self.id)))
+            .id(id)
             .margin(Margin::ZERO)
             .frame(false)
             .font(font)
@@ -390,6 +419,36 @@ impl DocumentTab {
             self.update_preview();
         }
         Ok(())
+    }
+    fn page_pictures(&mut self, page: usize) -> Result<&[crate::pictures::Picture], &str> {
+        if !self.pictures.contains_key(&page) {
+            let found = (|| -> Result<Vec<crate::pictures::Picture>> {
+                let session = self.doc.as_ref().context("문서")?;
+                if self.picture_source.is_none() {
+                    self.picture_source =
+                        Some(crate::pictures::open(session.bytes(), &session.password)?);
+                }
+                crate::pictures::placements(
+                    self.picture_source.as_ref().unwrap(),
+                    page,
+                    &session.doc.page(page)?,
+                )
+            })();
+            self.pictures.insert(
+                page,
+                found.map_err(|e| format!("이 페이지의 이미지 위치를 읽을 수 없습니다. {e}")),
+            );
+        }
+        self.pictures[&page].as_deref().map_err(String::as_str)
+    }
+    fn pick_image(title: &str) -> Result<Option<image::DynamicImage>> {
+        rfd::FileDialog::new()
+            .set_title(title)
+            .add_filter("이미지", &["png", "jpg", "jpeg", "bmp", "tif", "tiff"])
+            .pick_file()
+            .map(image::open)
+            .transpose()
+            .map_err(Into::into)
     }
     fn group_size(&self) -> usize {
         if self.spread {
@@ -554,19 +613,35 @@ impl DocumentTab {
         let ppp = ctx.pixels_per_point();
         let page_rects = layout.visible_pages(viewport, self.pan, ppp);
         let page_scale = layout.scale;
-        let bg = ui.interact(viewport, Id::new("pdf_canvas"), Sense::click_and_drag());
-        let pointer = ctx.pointer_hover_pos();
+        let sense = if self.mode == Mode::EditImage {
+            Sense::click()
+        } else {
+            Sense::click_and_drag()
+        };
+        let bg = ui.interact(viewport, Id::new("pdf_canvas"), sense);
+        let open_menu = bg.secondary_clicked();
+        if open_menu {
+            self.picture_menu = None;
+        }
+        let pointer = if bg.clicked() || open_menu {
+            bg.interact_pointer_pos()
+        } else {
+            ctx.pointer_hover_pos()
+        };
         let over = pointer.and_then(|p| {
             page_rects
                 .iter()
                 .find(|v| viewport.contains(p) && v.rect.contains(p))
                 .map(|v| (v.number, ((p - v.rect.min) / page_scale).to_pos2()))
         });
+        let mut hovered_picture = None;
         if !blocked {
             if self.mode == Mode::View && bg.dragged() {
                 self.pan += ctx.input(|i| i.pointer.delta());
             }
-            if matches!(self.mode, Mode::Text | Mode::Image) && bg.drag_started() {
+            if matches!(self.mode, Mode::Text | Mode::AddImage)
+                && bg.drag_started_by(PointerButton::Primary)
+            {
                 if let Some(start) = ctx.input(|i| i.pointer.press_origin()) {
                     self.drag = page_rects
                         .iter()
@@ -586,7 +661,55 @@ impl DocumentTab {
                 } else {
                     None
                 };
-                if link.is_some() {
+                let editing_image = self.mode == Mode::EditImage;
+                if open_menu || (editing_image && (bg.hovered() || bg.clicked())) {
+                    match self.page_pictures(i) {
+                        Ok(pictures) => {
+                            if let Some((idx, picture)) = pictures
+                                .iter()
+                                .enumerate()
+                                .rev()
+                                .find(|(_, p)| p.contains(point))
+                            {
+                                if open_menu {
+                                    self.picture_menu = Some((i, idx, picture.clone()));
+                                } else if editing_image {
+                                    hovered_picture = Some((i, idx));
+                                    if bg.clicked() {
+                                        self.cmd = Some(Cmd::ReplaceImage(i, picture.clone()));
+                                    } else if !bg.context_menu_opened() {
+                                        let [w, h] = picture.pixels;
+                                        egui::show_tooltip_at_pointer(
+                                            &ctx,
+                                            ui.layer_id(),
+                                            Id::new(("picture_pixels", self.id)),
+                                            |ui| {
+                                                let label =
+                                                    Label::new(format!("{w} × {h} px")).extend();
+                                                let rect = ui.add(label).rect;
+                                                // egui positions a tooltip using its previous size.
+                                                if !ui.clip_rect().contains_rect(rect) {
+                                                    ui.ctx().request_discard(
+                                                        "resize image dimensions tooltip",
+                                                    );
+                                                }
+                                            },
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        Err(err) if bg.clicked() => anyhow::bail!("{err}"),
+                        _ => {}
+                    }
+                }
+                if self.mode == Mode::EditImage {
+                    if hovered_picture.is_some() {
+                        bg.clone().on_hover_cursor(CursorIcon::PointingHand);
+                    }
+                } else if self.mode == Mode::AddImage {
+                    bg.clone().on_hover_cursor(CursorIcon::Crosshair);
+                } else if link.is_some() {
                     bg.clone().on_hover_cursor(CursorIcon::PointingHand);
                 } else if self.mode != Mode::View {
                     bg.clone().on_hover_cursor(CursorIcon::Text);
@@ -615,30 +738,35 @@ impl DocumentTab {
                                 point,
                                 Some(Rect::from_min_size(point, vec2(180., 44.))),
                             )?,
-                            _ => (),
+                            Mode::EditImage | Mode::AddImage => {}
                         }
                     }
                 }
             }
-            bg.context_menu(|ui| self.menu(ui));
-            if bg.drag_stopped() {
+            bg.context_menu(|ui| {
+                if let Some((page, index, picture)) = &self.picture_menu {
+                    let allowed = self.doc.as_ref().is_some_and(|s| s.doc.extractable());
+                    if ui
+                        .add_enabled(allowed, Button::new("이미지 내보내기…"))
+                        .on_disabled_hover_text("이 PDF는 이미지 추출 권한이 제한되어 있습니다.")
+                        .clicked()
+                    {
+                        self.cmd = Some(Cmd::ExportPicture(*page, *index, picture.clone()));
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                }
+                self.menu(ui);
+            });
+            if bg.drag_stopped_by(PointerButton::Primary) {
                 if let (Some((p, start)), Some((i, end))) = (self.drag.take(), over) {
                     if p == i {
                         let rect = Rect::from_two_pos(start, end);
                         if rect.width() > 4. && rect.height() > 4. {
                             if self.mode == Mode::Text {
                                 self.begin_edit(p, start, Some(rect))?
-                            } else if self.mode == Mode::Image {
-                                if let Some(file) = rfd::FileDialog::new()
-                                    .add_filter(
-                                        "이미지",
-                                        &["png", "jpg", "jpeg", "bmp", "tif", "tiff"],
-                                    )
-                                    .pick_file()
-                                {
-                                    let img = image::open(file)?;
-                                    self.apply(|d| d.page(p)?.add_image(rect, &img))?;
-                                }
+                            } else if self.mode == Mode::AddImage {
+                                self.cmd = Some(Cmd::InsertImage(p, rect));
                             }
                         }
                     }
@@ -703,6 +831,30 @@ impl DocumentTab {
                                 Color32::from_rgba_unmultiplied(255, 224, 45, 95)
                             },
                         );
+                    }
+                }
+            }
+            if self.mode == Mode::EditImage {
+                if let Ok(pictures) = self.page_pictures(i) {
+                    let to_screen = |p: Pos2| r.min + p.to_vec2() * page_scale;
+                    for (idx, pic) in pictures.iter().enumerate() {
+                        let bounds = pic.bounds();
+                        let clip = Rect::from_min_max(to_screen(bounds.min), to_screen(bounds.max))
+                            .expand(1.);
+                        if !painter.clip_rect().intersects(clip) {
+                            continue;
+                        }
+                        let stroke = if hovered_picture == Some((i, idx)) {
+                            Stroke::new(2_f32, Color32::from_rgb(39, 99, 178))
+                        } else {
+                            Stroke::new(1_f32, Color32::from_rgba_unmultiplied(64, 116, 180, 135))
+                        };
+                        painter
+                            .with_clip_rect(painter.clip_rect().intersect(clip))
+                            .add(Shape::closed_line(
+                                pic.corners.map(to_screen).to_vec(),
+                                stroke,
+                            ));
                     }
                 }
             }

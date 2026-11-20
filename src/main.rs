@@ -6,6 +6,7 @@ mod fonts;
 mod forms;
 mod instance;
 mod pdf;
+mod pictures;
 mod session;
 mod tables;
 mod toolbar;
