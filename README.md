@@ -13,6 +13,7 @@ Windows 10 버전 2004 이상 또는 Windows 11에서 설치 파일을 실행하
 - PDF에 이미지를 추가하거나 기존 사진을 같은 자리에 교체할 수 있습니다. 이미지 편집 중에는 사진 위에 원본 픽셀 크기가 표시되며, 사진을 우클릭하면 PNG로 저장할 수 있습니다.
 - PDF 페이지를 병합·추출·회전하거나 순서를 바꿀 수 있습니다.
 - PDF를 Word 문서, Excel 표, PNG 또는 JPG로 내보낼 수 있습니다. Office 문서를 PDF로 변환할 때는 해당 Microsoft Office 앱이 필요합니다.
+- **변환** 메뉴에서 **Word · PowerPoint · Excel → PDF**를 선택한 뒤 저장 위치를 지정하세요. 설치 후 탐색기에서 문서를 우클릭하고 **PDF로 변환**을 선택하면 원본 옆에 PDF가 생깁니다. Windows 11에서는 탐색기 확장을 설치하면 첫 우클릭 메뉴에 표시됩니다. 파일명이 겹치면 새 PDF에 번호가 붙습니다.
 
 자세한 조작법과 변환 지원 범위는 [사용 설명서](사용방법.txt)에 있습니다.
 
@@ -25,10 +26,10 @@ Windows x64에서 Rust와 해당 도구 체인의 C/C++ 링커를 준비한 뒤 
 .\target\release\SimplePDF.exe --self-test .\target\self-test
 ```
 
-설치 파일을 만들려면 Inno Setup 6의 컴파일러 경로를 지정하세요.
+설치 파일을 만들려면 Inno Setup 6, MinGW-w64의 g++, Windows SDK의 MakeAppx 및 SignTool이 필요합니다. 탐색기 패키지에 서명할 인증서는 현재 사용자의 개인 인증서 저장소에 있어야 하며, 설치 대상 PC에서 신뢰해야 합니다.
 
 ```powershell
-.\build.ps1 -Package -InnoCompiler "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+.\build.ps1 -Package -MenuCertificate $env:SIMPLEPDF_SIGNING_THUMBPRINT -InnoCompiler "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 ```
 
 빌드한 설치 파일은 `installers` 폴더에 생성됩니다.

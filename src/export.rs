@@ -393,8 +393,19 @@ pub fn image_pages(doc: &Document, pages: &[usize], dir: &Path, jpeg: bool) -> R
     std::fs::rename(tmp.path(), dir)?;
     Ok(())
 }
-pub fn office(source: &Path, target: &Path) -> Result<()> {
+pub const OFFICE_EXTENSIONS: &[&str] = &[
+    "doc", "docx", "rtf", "odt", "ppt", "pptx", "xls", "xlsx", "xlsm", "csv",
+];
+
+fn office_pdf(source: &Path) -> Result<Vec<u8>> {
     use std::os::windows::process::CommandExt;
+    ensure!(
+        source.extension().is_some_and(|ext| OFFICE_EXTENSIONS
+            .iter()
+            .any(|e| ext.eq_ignore_ascii_case(e))),
+        "Word, PowerPoint 또는 Excel 문서를 선택해 주세요."
+    );
+    ensure!(source.is_file(), "원본 문서를 찾을 수 없습니다.");
     let script = include_str!("../office_convert.ps1");
     let temp = tempfile::tempdir()?;
     let output = temp.path().join("converted.pdf");
@@ -416,11 +427,44 @@ pub fn office(source: &Path, target: &Path) -> Result<()> {
         .output()?;
     if !result.status.success() {
         bail!(
-            "Office 변환 실패: {}",
+            "문서를 PDF로 변환하지 못했습니다. 해당 Microsoft Office 앱에서 원본을 열 수 있는지 확인하세요.\n{}",
             String::from_utf8_lossy(&result.stderr)
         )
     }
     let bytes = std::fs::read(output)?;
     Document::open(bytes.clone(), "")?;
-    save_atomic(target, &bytes)
+    Ok(bytes)
+}
+
+pub fn office(source: &Path, target: &Path) -> Result<()> {
+    ensure!(
+        target
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf")),
+        "저장할 파일의 확장자를 .pdf로 지정하세요."
+    );
+    save_atomic(target, &office_pdf(source)?)
+}
+
+pub fn office_beside_source(source: &Path) -> Result<()> {
+    let source = std::path::absolute(source)?;
+    let bytes = office_pdf(&source)?;
+    let stem = source.file_stem().context("문서 이름")?;
+    let mut staged = tempfile::NamedTempFile::new_in(source.parent().context("저장 폴더")?)
+        .context("원본 폴더에 PDF를 저장할 수 없습니다.")?;
+    staged.write_all(&bytes)?;
+    staged.as_file().sync_all()?;
+    for number in 1u64.. {
+        let mut name = stem.to_os_string();
+        if number > 1 {
+            name.push(format!(" ({number})"));
+        }
+        name.push(".pdf");
+        match staged.persist_noclobber(source.with_file_name(name)) {
+            Ok(_) => return Ok(()),
+            Err(err) if err.error.kind() == std::io::ErrorKind::AlreadyExists => staged = err.file,
+            Err(err) => return Err(err.error).context("변환된 PDF를 저장하지 못했습니다."),
+        }
+    }
+    bail!("사용 가능한 PDF 파일 이름이 없습니다.")
 }

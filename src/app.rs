@@ -76,6 +76,7 @@ struct Job {
 struct Find {
     open: bool,
     query: String,
+    options: session::SearchOptions,
     scan: usize,
     found: Vec<(usize, Vec<Rect>)>,
     active: usize,
@@ -87,6 +88,7 @@ impl Default for Find {
         Self {
             open: false,
             query: String::new(),
+            options: session::SearchOptions::default(),
             scan: 0,
             found: vec![],
             active: 0,
@@ -569,16 +571,15 @@ impl DocumentTab {
             }
             Cmd::Office => {
                 if let Some(src) = rfd::FileDialog::new()
+                    .set_title("PDF로 변환할 문서 선택")
                     .add_filter(
-                        "Office",
-                        &[
-                            "docx", "doc", "odt", "rtf", "xls", "xlsx", "xlsm", "csv", "ppt",
-                            "pptx",
-                        ],
+                        "Word · PowerPoint · Excel",
+                        crate::export::OFFICE_EXTENSIONS,
                     )
                     .pick_file()
                 {
                     if let Some(out) = rfd::FileDialog::new()
+                        .set_directory(src.parent().context("문서 폴더")?)
                         .add_filter("PDF", &["pdf"])
                         .set_file_name(
                             src.with_extension("pdf")
@@ -757,7 +758,7 @@ impl DocumentTab {
                 ("PDF → PNG", Cmd::Export("png")),
                 ("PDF → JPG", Cmd::Export("jpg")),
                 ("이미지 → PDF", Cmd::Images),
-                ("Office → PDF", Cmd::Office),
+                ("Word · PowerPoint · Excel → PDF", Cmd::Office),
             ] {
                 self.menu_item(ui, n, c)
             }
@@ -1074,12 +1075,6 @@ pub fn verify_image_modes() -> Result<()> {
         );
         Ok(())
     };
-    let label_position = |output: &FullOutput, label: &str| {
-        output.shapes.iter().find_map(|s| match &s.shape {
-            Shape::Text(t) if t.galley.job.text == label => Some(t.pos + t.galley.size() * 0.5),
-            _ => None,
-        })
-    };
     let gesture = |tab: &mut DocumentTab, from: Pos2, to: Pos2| {
         let button = |pos, pressed| Event::PointerButton {
             pos,
@@ -1192,6 +1187,13 @@ pub fn verify_image_modes() -> Result<()> {
     ensure!(tab.error.is_empty(), "이미지 도구 오류: {}", tab.error);
     Ok(())
 }
+fn label_position(output: &FullOutput, label: &str) -> Option<Pos2> {
+    output.shapes.iter().find_map(|s| match &s.shape {
+        Shape::Text(t) if t.galley.job.text == label => Some(t.pos + t.galley.size() * 0.5),
+        _ => None,
+    })
+}
+
 pub fn verify_controls(path: &Path) -> Result<()> {
     use eframe::App as _;
     let ctx = egui::Context::default();
@@ -1206,7 +1208,7 @@ pub fn verify_controls(path: &Path) -> Result<()> {
             events,
             ..Default::default()
         };
-        let _ = ctx.run(raw, |ctx| a.update(ctx, frame));
+        ctx.run(raw, |ctx| a.update(ctx, frame))
     };
     tick(&mut app, vec![], Modifiers::NONE, &mut frame);
     let center = app.tabs[0].view.center();
@@ -1264,11 +1266,36 @@ pub fn verify_controls(path: &Path) -> Result<()> {
         &mut frame,
     );
     app.tabs[0].find.deadline = Instant::now();
-    tick(&mut app, vec![], Modifiers::NONE, &mut frame);
+    let mut output = tick(&mut app, vec![], Modifiers::NONE, &mut frame);
     ensure!(
-        app.tabs[0].find.found.len() == 2 && app.tabs[0].find.active == 0,
-        "검색 결과 두 건"
+        !app.tabs[0].find.options.match_case && app.tabs[0].find.found.len() == 2,
+        "기본 검색은 p와 P를 모두 찾아야 함"
     );
+    for (label, count) in [("대소문자 구분", 1), ("대소문자 구분", 2)] {
+        let pos = label_position(&output, label).context("검색 옵션 위치")?;
+        tick(
+            &mut app,
+            vec![Event::PointerMoved(pos)],
+            Modifiers::NONE,
+            &mut frame,
+        );
+        for pressed in [true, false] {
+            let event = Event::PointerButton {
+                pos,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            };
+            tick(&mut app, vec![event], Modifiers::NONE, &mut frame);
+        }
+        app.tabs[0].find.deadline = Instant::now();
+        output = tick(&mut app, vec![], Modifiers::NONE, &mut frame);
+        ensure!(
+            app.tabs[0].find.found.len() == count && app.tabs[0].find.active == 0,
+            "{label} 변경 후 검색 결과: {} / {count}",
+            app.tabs[0].find.found.len()
+        );
+    }
     for (modifiers, expected) in [
         (Modifiers::NONE, 1),
         (Modifiers::NONE, 0),

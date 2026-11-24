@@ -24,6 +24,48 @@ pub fn run(dir: &Path) -> Result<()> {
             text: "SimplePDF 한글 검색".into(),
             style: style.clone(),
         };
+        let codes = Document::blank()?;
+        for (line, text) in ["e23 E23 23 E230 AE23 (E23)", "E", "23", "-23"]
+            .iter()
+            .enumerate()
+        {
+            codes.page(0)?.edit(&Edit {
+                text: text.to_string(),
+                rect: rect.translate(vec2(0., line as f32 * 45.)),
+                ..edit.clone()
+            })?;
+        }
+        let codes = Document::open(codes.bytes()?, "")?;
+        let glyphs = codes.page(0)?.layout()?.glyphs;
+        let defaults = session::SearchOptions::default();
+        let results = session::hits(&glyphs, "e23", defaults);
+        ensure!(
+            results.len() == 3,
+            "e23 코드 검색: {}건 (3건 예상)",
+            results.len()
+        );
+        for boxes in results {
+            let highlighted: String = glyphs
+                .iter()
+                .filter(|g| {
+                    g.rect.is_positive() && boxes.iter().any(|b| b.contains(g.rect.center()))
+                })
+                .map(|g| g.ch)
+                .collect();
+            ensure!(
+                highlighted.eq_ignore_ascii_case("e23"),
+                "코드 강조 범위: {highlighted}"
+            );
+        }
+        passed.push("e23 코드 일치·단독 숫자와 줄 경계 제외·강조 범위");
+        for (query, match_case, expected) in [("e23", true, 1), ("E23", true, 2), ("23", false, 8)]
+        {
+            let options = session::SearchOptions { match_case };
+            ensure!(
+                session::hits(&glyphs, query, options).len() == expected,
+                "대소문자·숫자 검색 {query}"
+            );
+        }
         s.apply(|d| d.page(0)?.edit(&edit))?;
         let layout = s.doc.page(0)?.layout()?;
         ensure!(
@@ -57,7 +99,12 @@ pub fn run(dir: &Path) -> Result<()> {
         s.save(&file)?;
         ensure!(!s.dirty());
         let check = Document::open(std::fs::read(&file)?, "")?;
-        ensure!(session::hits(&check.page(0)?.layout()?.glyphs, "한글 수정").len() == 1);
+        let glyphs = check.page(0)?.layout()?.glyphs;
+        ensure!(session::hits(&glyphs, "한글 수정", defaults).len() == 1);
+        ensure!(
+            session::hits(&glyphs, "한", defaults).len() == 1,
+            "한글 부분 검색"
+        );
         passed.push("실행 취소·다시 실행·저장·검색");
         s.apply(|d| d.import(&check, &[0, 0]))?;
         ensure!(s.doc.count() == 3);
@@ -112,7 +159,7 @@ pub fn run(dir: &Path) -> Result<()> {
             ensure!(n.bookmarks().len() >= 2);
             let p = n.page(2)?.layout()?;
             for (q, k) in [("needle", 4), ("STRASSE", 1), ("검색 대상", 1)] {
-                ensure!(session::hits(&p.glyphs, q).len() == k, "검색 {q}");
+                ensure!(session::hits(&p.glyphs, q, defaults).len() == k, "검색 {q}");
             }
             let other = n.page(5)?.layout()?;
             for q in [
@@ -121,7 +168,10 @@ pub fn run(dir: &Path) -> Result<()> {
                 "wrapped search query",
                 "value[1].*",
             ] {
-                ensure!(session::hits(&other.glyphs, q).len() == 1, "검색 {q}");
+                ensure!(
+                    session::hits(&other.glyphs, q, defaults).len() == 1,
+                    "검색 {q}"
+                );
             }
             let page = n.page(1)?;
             let found = session::inferred(&page.layout()?, page.size.y, &n, &n.bookmarks());

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
+  xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
+  xmlns:desktop5="http://schemas.microsoft.com/appx/manifest/desktop/windows10/5"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap10 com desktop4 desktop5 rescap">
+  <Identity Name="SimplePDF.ExplorerMenu" Publisher="CN=SimplePDF" Version="1.0.3.0" ProcessorArchitecture="x64" />
+  <Properties>
+    <DisplayName>SimplePDF</DisplayName>
+    <PublisherDisplayName>SimplePDF</PublisherDisplayName>
+    <Logo>Logo.png</Logo>
+    <uap10:AllowExternalContent>true</uap10:AllowExternalContent>
+  </Properties>
+  <Dependencies><TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.22000.0" MaxVersionTested="10.0.26200.0" /></Dependencies>
+  <Resources><Resource Language="ko-KR" /></Resources>
+  <Applications>
+    <Application Id="SimplePDF" Executable="SimplePDF.exe" uap10:RuntimeBehavior="win32App" uap10:TrustLevel="mediumIL">
+      <uap:VisualElements AppListEntry="none" DisplayName="SimplePDF" Description="SimplePDF" BackgroundColor="transparent" Square150x150Logo="Logo.png" Square44x44Logo="Logo.png" />
+      <Extensions>
+        <com:Extension Category="windows.comServer">
+          <com:ComServer><com:SurrogateServer DisplayName="SimplePDF">
+            <com:Class Id="60715155-560c-4d46-bed7-684e5e4a5a96" Path="SimplePDFExplorer.dll" ThreadingModel="STA" />
+          </com:SurrogateServer></com:ComServer>
+        </com:Extension>
+        <desktop4:Extension Category="windows.fileExplorerContextMenus">
+          <desktop4:FileExplorerContextMenus>
+            <desktop5:ItemType Type=".doc"><desktop5:Verb Id="ConvertToPDF" Clsid="60715155-560c-4d46-bed7-684e5e4a5a96" /></desktop5:ItemType>
+            <desktop5:ItemType Type=".docx"><desktop5:Verb Id="ConvertToPDF" Clsid="60715155-560c-4d46-bed7-684e5e4a5a96" /></desktop5:ItemType>
+            <desktop5:ItemType Type=".rtf"><desktop5:Verb Id="ConvertToPDF" Clsid="60715155-560c-4d46-bed7-684e5e4a5a96" /></desktop5:ItemType>
+            <desktop5:ItemType Type=".odt"><desktop5:Verb Id="ConvertToPDF" Clsid="60715155-560c-4d46-bed7-684e5e4a5a96" /></desktop5:ItemType>
+            <desktop5:ItemType Type=".ppt"><desktop5:Verb Id="ConvertToPDF" Clsid="60715155-560c-4d46-bed7-684e5e4a5a96" /></desktop5:ItemType>
+            <desktop5:ItemType Type=".pptx"><desktop5:Verb Id="ConvertToPDF" Clsid="60715155-560c-4d46-bed7-684e5e4a5a96" /></desktop5:ItemType>
+            <desktop5:ItemType Type=".xls"><desktop5:Verb Id="ConvertToPDF" Clsid="60715155-560c-4d46-bed7-684e5e4a5a96" /></desktop5:ItemType>
+            <desktop5:ItemType Type=".xlsx"><desktop5:Verb Id="ConvertToPDF" Clsid="60715155-560c-4d46-bed7-684e5e4a5a96" /></desktop5:ItemType>
+            <desktop5:ItemType Type=".xlsm"><desktop5:Verb Id="ConvertToPDF" Clsid="60715155-560c-4d46-bed7-684e5e4a5a96" /></desktop5:ItemType>
+            <desktop5:ItemType Type=".csv"><desktop5:Verb Id="ConvertToPDF" Clsid="60715155-560c-4d46-bed7-684e5e4a5a96" /></desktop5:ItemType>
+          </desktop4:FileExplorerContextMenus>
+        </desktop4:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+  <Capabilities><rescap:Capability Name="runFullTrust" /></Capabilities>
+</Package>

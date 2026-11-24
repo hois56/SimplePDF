@@ -1,5 +1,5 @@
 ﻿[CmdletBinding()]
-param([switch]$Package, [string]$InnoCompiler)
+param([switch]$Package, [string]$InnoCompiler, [string]$MakeAppx, [string]$MenuCertificate = $env:SIMPLEPDF_SIGNING_THUMBPRINT)
 $ErrorActionPreference='Stop'
 Push-Location -LiteralPath $PSScriptRoot
 try {
@@ -21,6 +21,7 @@ try {
     $exe = Join-Path $binaryDir 'SimplePDF.exe'
     if (!(Test-Path -LiteralPath $exe)) { throw "Missing $exe" }
     if (!$Package) { Write-Output $exe; return }
+    if (!$MenuCertificate) { throw 'Set -MenuCertificate to the code-signing certificate thumbprint for the Explorer package.' }
 
     $report = Join-Path $PSScriptRoot 'target\release-check'
     $check = Start-Process -FilePath $exe -ArgumentList ('--self-test "' + $report + '"') -WindowStyle Hidden -Wait -PassThru
@@ -48,6 +49,8 @@ try {
     foreach ($name in 'LocalPDF.iss','clean_reinstall.iss','install_paths.iss') {
         Copy-Item -LiteralPath (Join-Path 'installer' $name) -Destination (Join-Path $src 'installer') -Force
     }
+    Copy-Item -LiteralPath 'installer\explorer' -Destination (Join-Path $src 'installer') -Recurse -Force
+    & .\installer\explorer\build-menu.ps1 -Payload $payload -Stage (Join-Path $PSScriptRoot 'target\explorer-identity') -MakeAppx $MakeAppx -Certificate $MenuCertificate
     $pdfNotices = Join-Path $PSScriptRoot 'native\pdfium\BUILD_LICENSES'
     if (!(Test-Path -LiteralPath $pdfNotices)) { $pdfNotices = Join-Path $PSScriptRoot '..\licenses\PDFium' }
     New-Item -ItemType Directory -Force (Join-Path $licenses 'PDFium') | Out-Null

@@ -4,7 +4,7 @@
 #ifndef ProjectDir
   #error ProjectDir is required
 #endif
-#define AppVersion "1.0.1"
+#define AppVersion "1.0.3"
 
 [Setup]
 AppId={{6F40E14D-6239-463D-9006-D027C4FF2139}
@@ -56,6 +56,17 @@ Name: "{userprograms}\SimplePDF\PDF 기본 앱 설정"; Filename: "{win}\explore
 Name: "{userdesktop}\SimplePDF"; Filename: "{app}\SimplePDF.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Registry]
+#define OfficeVerb(Ext) "Software\Classes\SystemFileAssociations\." + Ext + "\shell\SimplePDF.ConvertToPDF"
+#sub RegisterOfficeVerb
+Root: HKCU; Subkey: "{#OfficeVerb(OfficeFormats[OfficeIndex])}"; ValueType: string; ValueData: "PDF로 변환"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "{#OfficeVerb(OfficeFormats[OfficeIndex])}"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\SimplePDF.exe"",0"
+Root: HKCU; Subkey: "{#OfficeVerb(OfficeFormats[OfficeIndex])}"; ValueType: string; ValueName: "MultiSelectModel"; ValueData: "Single"
+Root: HKCU; Subkey: "{#OfficeVerb(OfficeFormats[OfficeIndex])}\command"; ValueType: string; ValueData: """{app}\SimplePDF.exe"" --to-pdf ""%1"""
+#endsub
+#dim OfficeFormats[10] {"doc", "docx", "rtf", "odt", "ppt", "pptx", "xls", "xlsx", "xlsm", "csv"}
+#define OfficeIndex
+#for {OfficeIndex = 0; OfficeIndex < DimOf(OfficeFormats); OfficeIndex++} RegisterOfficeVerb
+
 Root: HKCU; Subkey: "Software\Classes\SimplePDF.PDF"; ValueType: string; ValueData: "PDF 문서"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Classes\SimplePDF.PDF\DefaultIcon"; ValueType: string; ValueData: """{app}\SimplePDF.exe"",0"
 Root: HKCU; Subkey: "Software\Classes\SimplePDF.PDF\shell\open\command"; ValueType: string; ValueData: """{app}\SimplePDF.exe"" ""%1"""
@@ -112,6 +123,30 @@ const
 
 #include "clean_reinstall.iss"
 
+procedure ConfigureExplorerMenu(Uninstalling: Boolean);
+var Params: String; ExitCode: Integer; Version: TWindowsVersion;
+begin
+  GetWindowsVersionEx(Version);
+  if Version.Build < 22000 then exit;
+  if Uninstalling then
+    Params := '$publisher = (Get-AuthenticodeSignature -LiteralPath .\SimplePDF.ExplorerMenu.msix).SignerCertificate.Subject; ' +
+              'Get-AppxPackage -Name SimplePDF.ExplorerMenu | Where-Object Publisher -eq $publisher | Remove-AppxPackage'
+  else
+    Params := 'Add-AppxPackage -Path .\SimplePDF.ExplorerMenu.msix -ExternalLocation (Get-Location).Path';
+  Params := '-NoProfile -NonInteractive -Command "$ErrorActionPreference = ''Stop''; ' + Params + '"';
+  if (not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Params,
+               ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ExitCode)) or (ExitCode <> 0) then begin
+    Log(Format('SimplePDF Explorer package operation failed (%d)', [ExitCode]));
+    if not Uninstalling then
+      SuppressibleMsgBox('Windows 11 탐색기 첫 메뉴에 PDF 변환을 등록하지 못했습니다. 패키지 서명 신뢰 여부와 Windows 앱 설치 정책을 확인하세요.', mbInformation, MB_OK, IDOK);
+  end;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usUninstall then ConfigureExplorerMenu(True);
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := PrepareCleanReinstall;
@@ -121,5 +156,6 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then begin
     FinishCleanReinstall;
+    ConfigureExplorerMenu(False);
   end;
 end;

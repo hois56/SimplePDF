@@ -314,37 +314,54 @@ pub fn pages(input: &str, total: usize) -> Result<Vec<usize>> {
     }
     Ok(out)
 }
-fn fold(c: char) -> Vec<char> {
-    if c == 'ß' || c == 'ẞ' {
+#[derive(Clone, Copy, Default)]
+pub struct SearchOptions {
+    pub match_case: bool,
+}
+
+fn word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_' || unicode_normalization::char::is_combining_mark(c)
+}
+
+fn fold(c: char, match_case: bool) -> Vec<char> {
+    if !match_case && (c == 'ß' || c == 'ẞ') {
         return vec!['s', 's'];
     }
-    c.to_lowercase()
-        .flat_map(|ch| ch.to_string().nfkd().collect::<Vec<_>>())
+    let text = if match_case {
+        c.to_string()
+    } else {
+        c.to_lowercase().collect()
+    };
+    text.nfkd()
         .filter(|c| *c != '\u{ad}' && *c != '\u{2}')
         .collect()
 }
-pub fn hits(glyphs: &[Glyph], query: &str) -> Vec<Vec<Rect>> {
+pub fn hits(glyphs: &[Glyph], query: &str, options: SearchOptions) -> Vec<Vec<Rect>> {
     let needle: Vec<char> = query
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
         .chars()
-        .flat_map(fold)
+        .flat_map(|c| fold(c, options.match_case))
         .collect();
     if needle.is_empty() {
         return vec![];
     }
+    let code = needle.iter().all(char::is_ascii_alphanumeric)
+        && needle.iter().any(char::is_ascii_alphabetic)
+        && needle.iter().any(char::is_ascii_digit);
     let mut hay = vec![];
     let mut indices = vec![];
     for (i, g) in glyphs.iter().enumerate() {
-        if g.ch == '-'
+        if !code
+            && g.ch == '-'
             && glyphs
                 .get(i + 1)
                 .is_some_and(|g| g.ch == '\r' || g.ch == '\n')
         {
             continue;
         }
-        for c in fold(g.ch) {
+        for c in fold(g.ch, options.match_case) {
             let c = if c == '\r' || c == '\n' {
                 '\n'
             } else if c.is_whitespace() {
@@ -375,7 +392,7 @@ pub fn hits(glyphs: &[Glyph], query: &str) -> Vec<Vec<Rect>> {
                     break;
                 }
             } else {
-                if cursor > i {
+                if !code && cursor > i {
                     while hay.get(cursor) == Some(&'\n') {
                         cursor += 1
                     }
@@ -386,6 +403,15 @@ pub fn hits(glyphs: &[Glyph], query: &str) -> Vec<Vec<Rect>> {
                 }
                 cursor += 1
             }
+        }
+        if matched && code {
+            let before = i.checked_sub(1).and_then(|j| hay.get(j));
+            let after = hay.get(cursor);
+            matched = !before.is_some_and(|&c| word_char(c))
+                && !after.is_some_and(|&c| word_char(c))
+                && indices[i..cursor]
+                    .iter()
+                    .all(|&j| glyphs[j].rect.is_positive());
         }
         if matched {
             let range = indices[i]..=indices[cursor - 1];

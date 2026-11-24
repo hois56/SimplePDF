@@ -15,6 +15,10 @@ use anyhow::{Context, Result};
 use std::{io::Read, path::PathBuf};
 fn run() -> Result<()> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if args.first().is_some_and(|s| s == "--to-pdf") {
+        anyhow::ensure!(args.len() == 2, "PDF로 변환할 문서 하나를 선택하세요.");
+        return export::office_beside_source(std::path::Path::new(&args[1]));
+    }
     if args.first().is_some_and(|s| s == "--self-test") {
         return verify::run(&PathBuf::from(args.get(1).context("검증 폴더")?));
     }

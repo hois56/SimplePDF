@@ -55,6 +55,7 @@ impl DocumentTab {
             .fixed_pos(pos2(self.view.right() - width - 19., self.view.top() + 7.))
             .show(ctx, |ui| {
                 Frame::popup(ui.style()).inner_margin(5).show(ui, |ui| {
+                    let mut changed = false;
                     ui.horizontal(|ui| {
                         let res = ui.add(
                             TextEdit::singleline(&mut self.find.query)
@@ -67,12 +68,7 @@ impl DocumentTab {
                             res.request_focus();
                             self.find.focus = false
                         }
-                        if res.changed() {
-                            self.find.scan = 0;
-                            self.find.found.clear();
-                            self.find.active = 0;
-                            self.find.deadline = Instant::now() + Duration::from_millis(160);
-                        }
+                        changed = res.changed();
                         if width > 240. {
                             ui.label(format!(
                                 "{} / {}",
@@ -98,6 +94,19 @@ impl DocumentTab {
                             self.find.open = false
                         }
                     });
+                    if ui
+                        .checkbox(&mut self.find.options.match_case, "대소문자 구분")
+                        .changed()
+                    {
+                        changed = true;
+                        ui.memory_mut(|m| m.request_focus(Id::new(("search_entry", self.id))));
+                    }
+                    if changed {
+                        self.find.scan = 0;
+                        self.find.found.clear();
+                        self.find.active = 0;
+                        self.find.deadline = Instant::now() + Duration::from_millis(160);
+                    }
                 });
             });
         if !self.find.query.trim().is_empty() && self.find.scan < self.count() {
@@ -112,7 +121,7 @@ impl DocumentTab {
             while self.find.scan < self.count() {
                 let idx = self.find.scan;
                 let layout = self.session()?.doc.page(idx)?.layout()?;
-                for boxes in session::hits(&layout.glyphs, &self.find.query) {
+                for boxes in session::hits(&layout.glyphs, &self.find.query, self.find.options) {
                     self.find.found.push((idx, boxes))
                 }
                 self.find.scan += 1;
