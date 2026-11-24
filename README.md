@@ -2,7 +2,7 @@
 
 Windows에서 PDF를 읽고, 문구를 직접 수정하고, Word·Excel·이미지로 변환하는 데스크톱 앱입니다. 문서는 PC에서 처리하며, PDF 보기와 편집에 계정이 필요하지 않습니다.
 
-**[Windows x64 설치 파일 다운로드](https://github.com/hois56/SimplePDF/releases/download/v1.0.1/SimplePDF-Setup-1.0.1.exe)** · [포터블 ZIP](https://github.com/hois56/SimplePDF/releases/download/v1.0.1/SimplePDF-1.0.1-portable.zip)
+**[Windows x64 설치 파일 다운로드](https://github.com/hois56/SimplePDF/releases/download/v1.0.3/SimplePDF-Setup-1.0.3.exe)** · [포터블 ZIP](https://github.com/hois56/SimplePDF/releases/download/v1.0.3/SimplePDF-1.0.3-portable.zip)
 
 ## 사용하기
 
