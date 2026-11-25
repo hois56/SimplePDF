@@ -124,6 +124,7 @@ struct DocumentTab {
     preview: Option<Document>,
     edit_error: String,
     drag: Option<(usize, Pos2)>,
+    selection: Option<TextSelection>,
     chosen_face: String,
     font_query: String,
     font_picker: bool,
@@ -206,6 +207,7 @@ impl DocumentTab {
             preview: None,
             edit_error: String::new(),
             drag: None,
+            selection: None,
             chosen_face: String::new(),
             font_query: String::new(),
             font_picker: false,
@@ -260,6 +262,7 @@ impl DocumentTab {
         self.page_sizes.clear();
         self.surfaces.clear();
         self.layouts.clear();
+        self.selection = None;
         self.toc.clear();
         self.pictures.clear();
         self.picture_source = None;
@@ -406,6 +409,7 @@ impl DocumentTab {
     }
     fn go(&mut self, page: usize) -> Result<()> {
         self.commit()?;
+        self.selection = None;
         self.page = page.min(self.count().saturating_sub(1));
         self.page_text = (self.page + 1).to_string();
         self.pan = Vec2::ZERO;
@@ -443,6 +447,7 @@ impl DocumentTab {
             self.pictures.clear();
         }
         self.drag = None;
+        self.selection = None;
         self.picture_menu = None;
         self.mode = m;
         self.props = matches!(m, Mode::Edit | Mode::Text);
@@ -1218,6 +1223,70 @@ pub fn verify_controls(path: &Path) -> Result<()> {
             && app.tabs[0].content.y <= app.tabs[0].view.height() + 1.,
         "기본 화면 맞춤"
     );
+    for (zoom, reverse) in [(1., false), (2., true)] {
+        let tab = &mut app.tabs[0];
+        tab.ensure_layout(0)?;
+        let glyphs = &tab.layouts[&0].glyphs;
+        let start = glyphs
+            .iter()
+            .position(|g| g.ch == 'S')
+            .context("선택 시작 글자")?;
+        let first = glyphs[start].rect.center();
+        let last = glyphs[start + 8].rect.center();
+        tab.change_zoom(zoom);
+        tab.dest(Destination {
+            page: 0,
+            point: Some(first),
+        })?;
+        tick(&mut app, vec![], Modifiers::NONE, &mut frame);
+        let tab = &mut app.tabs[0];
+        let pan = tab.pan;
+        let row = tab.row_layout(0, tab.view)?;
+        let page = row.visible_pages(tab.view, pan, ctx.pixels_per_point())[0].rect;
+        let screen = |p: Pos2| page.min + p.to_vec2() * row.scale;
+        let (from, to) = if reverse {
+            (screen(last), screen(first))
+        } else {
+            (screen(first), screen(last))
+        };
+        let button = |pos, pressed| Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        for events in [
+            vec![Event::PointerMoved(from)],
+            vec![button(from, true)],
+            vec![Event::PointerMoved(to)],
+            vec![button(to, false)],
+        ] {
+            tick(&mut app, events, Modifiers::NONE, &mut frame);
+        }
+        let output = tick(&mut app, vec![Event::Copy], Modifiers::CTRL, &mut frame);
+        ensure!(
+            output
+                .shapes
+                .iter()
+                .filter(|s| matches!(&s.shape, Shape::Rect(r) if r.fill == SELECTION_COLOR))
+                .count()
+                == 1,
+            "{zoom}배에서 한 줄 선택은 하나의 형광펜 띠"
+        );
+        ensure!(
+            app.tabs[0].pan == pan && app.tabs[0].page == 0,
+            "본문 드래그 중 화면 이동"
+        );
+        ensure!(
+            output.platform_output.commands.iter().any(
+                |cmd| matches!(cmd, egui::OutputCommand::CopyText(text) if text == "SimplePDF")
+            ),
+            "{zoom}배 보기 모드 드래그로 선택한 본문 복사"
+        );
+    }
+    app.tabs[0].execute(Cmd::Fit)?;
+    app.tabs[0].go(0)?;
+    tick(&mut app, vec![], Modifiers::NONE, &mut frame);
     let wheel = |y, mods| {
         vec![
             Event::PointerMoved(center),

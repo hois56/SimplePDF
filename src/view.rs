@@ -10,6 +10,72 @@ struct VisiblePage {
     number: usize,
     rect: Rect,
 }
+
+#[derive(Clone, Copy)]
+struct TextSelection {
+    // Page and glyph indices in PDF reading order, inclusive of both ends.
+    anchor: (usize, usize),
+    end: (usize, usize),
+}
+
+impl TextSelection {
+    fn glyphs(self, page: usize, glyphs: &[Glyph]) -> &[Glyph] {
+        let first = self.anchor.min(self.end);
+        let last = self.anchor.max(self.end);
+        if !(first.0..=last.0).contains(&page) {
+            return &[];
+        }
+        let from = if page == first.0 { first.1 } else { 0 };
+        let to = if page == last.0 {
+            last.1 + 1
+        } else {
+            glyphs.len()
+        };
+        glyphs.get(from..to).unwrap_or_default()
+    }
+}
+
+fn nearest_glyph(glyphs: &[Glyph], point: Pos2, starting: bool) -> Option<usize> {
+    glyphs
+        .iter()
+        .enumerate()
+        .filter(|(_, g)| {
+            g.rect.is_positive()
+                && !g.ch.is_control()
+                && (!starting || g.rect.expand(3.).contains(point))
+        })
+        .min_by(|(_, a), (_, b)| {
+            a.rect
+                .distance_sq_to_pos(point)
+                .total_cmp(&b.rect.distance_sq_to_pos(point))
+        })
+        .map(|(i, _)| i)
+}
+
+const SELECTION_COLOR: Color32 = Color32::from_rgba_premultiplied(19, 48, 84, 90);
+
+pub(super) fn selection_bands(glyphs: &[Glyph]) -> Vec<Rect> {
+    let mut bands = Vec::new();
+    // PDFium supplies line breaks in reading order, even when they have no glyph box.
+    for line in glyphs.split(|g| matches!(g.ch, '\r' | '\n' | '\u{2028}' | '\u{2029}')) {
+        let mut band = Rect::NOTHING;
+        let mut previous = Rect::NOTHING;
+        for rect in line.iter().map(|g| g.rect).filter(Rect::is_positive) {
+            // Bridge normal spacing, but leave the gutter between separate columns clear.
+            let gap = previous.size().max_elem().max(rect.size().max_elem()) * 2.;
+            if previous.is_positive() && !previous.expand(gap).intersects(rect) {
+                bands.push(band);
+                band = Rect::NOTHING;
+            }
+            band = band.union(rect);
+            previous = rect;
+        }
+        if band.is_positive() {
+            bands.push(band);
+        }
+    }
+    bands
+}
 impl RowLayout {
     fn limit(&self, viewport: Rect) -> Vec2 {
         ((self.content - viewport.size()) * 0.5).max(Vec2::ZERO)
@@ -36,6 +102,56 @@ impl RowLayout {
     }
 }
 impl DocumentTab {
+    fn selection_endpoint(
+        &mut self,
+        pages: &[VisiblePage],
+        pointer: Option<Pos2>,
+        starting: bool,
+    ) -> Result<Option<(usize, usize)>> {
+        let Some(pos) = pointer else {
+            return Ok(None);
+        };
+        let Some(page) = pages.iter().min_by(|a, b| {
+            a.rect
+                .distance_sq_to_pos(pos)
+                .total_cmp(&b.rect.distance_sq_to_pos(pos))
+        }) else {
+            return Ok(None);
+        };
+        if starting && !page.rect.intersect(self.view).contains(pos) {
+            return Ok(None);
+        }
+        self.ensure_layout(page.number)?;
+        let point = ((pos - page.rect.min) / self.scale).to_pos2();
+        Ok(
+            nearest_glyph(&self.layouts[&page.number].glyphs, point, starting)
+                .map(|i| (page.number, i)),
+        )
+    }
+    fn copy_selection(&mut self, ctx: &egui::Context) -> Result<()> {
+        let Some(selection) = self.selection else {
+            return Ok(());
+        };
+        ensure!(
+            self.session()?.doc.extractable(),
+            "이 PDF는 텍스트 복사 권한이 제한되어 있습니다."
+        );
+        let mut pages = Vec::new();
+        for page in
+            selection.anchor.0.min(selection.end.0)..=selection.anchor.0.max(selection.end.0)
+        {
+            self.ensure_layout(page)?;
+            let text: String = selection
+                .glyphs(page, &self.layouts[&page].glyphs)
+                .iter()
+                .map(|g| g.ch)
+                .filter(|c| !c.is_control() || matches!(c, '\r' | '\n' | '\t'))
+                .collect();
+            pages.push(text);
+        }
+        ctx.copy_text(pages.join("\n"));
+        Ok(())
+    }
     fn search_step(&mut self, delta: isize) -> Result<()> {
         if self.find.found.is_empty() {
             return Ok(());
@@ -157,6 +273,8 @@ impl DocumentTab {
                 self.cancel_edit()
             } else if self.find.open {
                 self.find.open = false
+            } else if self.selection.take().is_some() {
+                ctx.request_repaint()
             } else if *full {
                 *full = false;
                 ctx.send_viewport_cmd(ViewportCommand::Fullscreen(false))
@@ -165,6 +283,14 @@ impl DocumentTab {
         }
         if self.prompt.is_some() || !self.error.is_empty() {
             return Ok(());
+        }
+        if self.mode == Mode::View
+            && self.selection.is_some()
+            && ctx.memory(|m| m.has_focus(Id::new("pdf_canvas")))
+            && (ctx.input(|i| i.events.iter().any(|e| matches!(e, Event::Copy)))
+                || (m.command && key(Key::C)))
+        {
+            return self.copy_selection(ctx);
         }
         if key(Key::F11) {
             *full = !*full;
@@ -645,8 +771,35 @@ impl DocumentTab {
         });
         let mut hovered_picture = None;
         if !blocked {
-            if self.mode == Mode::View && bg.dragged() {
-                self.pan += ctx.input(|i| i.pointer.delta());
+            if self.mode == Mode::View {
+                if bg.dragged_by(PointerButton::Middle) {
+                    self.pan += ctx.input(|i| i.pointer.delta());
+                }
+                if bg.clicked_by(PointerButton::Primary) {
+                    self.selection = None;
+                }
+                if bg.drag_started_by(PointerButton::Primary) {
+                    let start = ctx.input(|i| i.pointer.press_origin());
+                    self.selection =
+                        self.selection_endpoint(&page_rects, start, true)?
+                            .map(|anchor| TextSelection {
+                                anchor,
+                                end: anchor,
+                            });
+                    if self.selection.is_some() {
+                        bg.request_focus();
+                    }
+                }
+                if self.selection.is_some()
+                    && (bg.dragged_by(PointerButton::Primary)
+                        || bg.drag_stopped_by(PointerButton::Primary))
+                {
+                    let end =
+                        self.selection_endpoint(&page_rects, bg.interact_pointer_pos(), false)?;
+                    if let (Some(selection), Some(end)) = (&mut self.selection, end) {
+                        selection.end = end;
+                    }
+                }
             }
             if matches!(self.mode, Mode::Text | Mode::AddImage)
                 && bg.drag_started_by(PointerButton::Primary)
@@ -720,7 +873,12 @@ impl DocumentTab {
                     bg.clone().on_hover_cursor(CursorIcon::Crosshair);
                 } else if link.is_some() {
                     bg.clone().on_hover_cursor(CursorIcon::PointingHand);
-                } else if self.mode != Mode::View {
+                } else if self.mode != Mode::View
+                    || self.layouts[&i]
+                        .glyphs
+                        .iter()
+                        .any(|g| g.rect.contains(point))
+                {
                     bg.clone().on_hover_cursor(CursorIcon::Text);
                 }
                 if bg.clicked() {
@@ -753,6 +911,19 @@ impl DocumentTab {
                 }
             }
             bg.context_menu(|ui| {
+                if self.selection.is_some()
+                    && ui
+                        .add_enabled(
+                            self.session().is_ok_and(|s| s.doc.extractable()),
+                            Button::new("텍스트 복사"),
+                        )
+                        .clicked()
+                {
+                    if let Err(e) = self.copy_selection(&ctx) {
+                        self.error = e.to_string();
+                    }
+                    ui.close_menu();
+                }
                 if let Some((page, index, picture)) = &self.picture_menu {
                     let allowed = self.doc.as_ref().is_some_and(|s| s.doc.extractable());
                     if ui
@@ -841,6 +1012,15 @@ impl DocumentTab {
                             },
                         );
                     }
+                }
+            }
+            if let (Some(selection), Some(layout)) = (self.selection, self.layouts.get(&i)) {
+                for band in selection_bands(selection.glyphs(i, &layout.glyphs)) {
+                    let mark = Rect::from_min_max(
+                        r.min + band.min.to_vec2() * page_scale,
+                        r.min + band.max.to_vec2() * page_scale,
+                    );
+                    painter.rect_filled(mark, 0., SELECTION_COLOR);
                 }
             }
             if self.mode == Mode::EditImage {

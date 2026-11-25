@@ -2,7 +2,7 @@ use crate::{
     pdf::*,
     session::{self, BookmarkOp, Session},
 };
-use anyhow::{ensure, Result};
+use anyhow::{ensure, Context, Result};
 use eframe::egui::{pos2, vec2, Rect};
 use std::path::Path;
 pub fn run(dir: &Path) -> Result<()> {
@@ -37,6 +37,25 @@ pub fn run(dir: &Path) -> Result<()> {
         }
         let codes = Document::open(codes.bytes()?, "")?;
         let glyphs = codes.page(0)?.layout()?.glyphs;
+        let line_end = glyphs
+            .iter()
+            .position(|g| matches!(g.ch, '\r' | '\n'))
+            .context("선택 검증 줄바꿈")?;
+        let next_e = glyphs[line_end..]
+            .iter()
+            .position(|g| g.ch == 'E')
+            .context("다음 줄의 E")?
+            + line_end;
+        let bands = crate::app::selection_bands(&glyphs[1..=next_e]);
+        let first_line = glyphs[1..line_end]
+            .iter()
+            .filter(|g| g.rect.is_positive())
+            .fold(Rect::NOTHING, |r, g| r.union(g.rect));
+        ensure!(
+            bands == [first_line, glyphs[next_e].rect] && bands[0].bottom() < bands[1].top(),
+            "공백 포함 두 줄의 부분 선택 띠"
+        );
+        passed.push("여러 줄 드래그 시 공백을 포함한 줄별 형광펜 표시");
         let defaults = session::SearchOptions::default();
         let results = session::hits(&glyphs, "e23", defaults);
         ensure!(
@@ -149,6 +168,7 @@ pub fn run(dir: &Path) -> Result<()> {
         crate::app::verify_page_scroll()?;
         passed.push("연속 휠·프레임 내 합산·방향 반전·첫 프레임 즉시 전환·두 페이지·정밀 스크롤·축소 및 DPI별 픽셀 정렬");
         crate::app::verify_controls(&file)?;
+        passed.push("기본·2배 확대에서 본문 정방향·역방향 드래그 선택과 복사, 페이지 위치 유지");
         passed.push("화면 맞춤·휠 줌/스크롤·두 페이지·연속 Enter/Shift+Enter 검색 순환·한영 글꼴 검색과 선택·문구별 실행 취소와 다시 실행·책갈피 패널 경계");
         let second = tmp.path().join("여러 쪽.pdf");
         std::fs::write(&second, s.doc.bytes()?)?;
