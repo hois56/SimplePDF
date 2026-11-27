@@ -85,6 +85,45 @@ pub fn run(dir: &Path) -> Result<()> {
                 "대소문자·숫자 검색 {query}"
             );
         }
+        let hex = Document::blank()?;
+        hex.page(0)?.edit(&Edit {
+            text: "0x282A 0X282a 282A 0x282A0 P0x282A A282A 0x282B".into(),
+            ..edit.clone()
+        })?;
+        let hex = Document::open(hex.bytes()?, "")?;
+        let hex_glyphs = hex.page(0)?.layout()?.glyphs;
+        let result = session::hits(&hex_glyphs, "282a", defaults);
+        ensure!(
+            result.len() == 3,
+            "bare hex code should find prefixed and bare tokens"
+        );
+        let selected: Vec<String> = result
+            .iter()
+            .map(|boxes| {
+                hex_glyphs
+                    .iter()
+                    .filter(|g| {
+                        g.rect.is_positive() && boxes.iter().any(|b| b.contains(g.rect.center()))
+                    })
+                    .map(|g| g.ch)
+                    .collect()
+            })
+            .collect();
+        ensure!(
+            selected == ["0x282A", "0X282a", "282A"],
+            "highlighted tokens: {selected:?}"
+        );
+        ensure!(session::hits(&hex_glyphs, "0x282a", defaults).len() == 2);
+        ensure!(
+            session::hits(
+                &hex_glyphs,
+                "282a",
+                session::SearchOptions { match_case: true }
+            )
+            .len()
+                == 1
+        );
+        passed.push("0x 접두어를 생략한 알람 코드 검색과 강조 범위");
         s.apply(|d| d.page(0)?.edit(&edit))?;
         let layout = s.doc.page(0)?.layout()?;
         ensure!(

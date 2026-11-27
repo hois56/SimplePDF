@@ -1,13 +1,13 @@
 [package]
 name = "simplepdf"
-version = "1.0.4"
+version = "1.0.5"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 build = "build.rs"
 
 [package.metadata.winresource]
-FileVersion = "1.0.4"
-ProductVersion = "1.0.4"
+FileVersion = "1.0.5"
+ProductVersion = "1.0.5"
 
 [[bin]]
 name = "SimplePDF"
