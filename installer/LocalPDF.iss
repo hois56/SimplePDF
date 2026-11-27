@@ -4,7 +4,7 @@
 #ifndef ProjectDir
   #error ProjectDir is required
 #endif
-#define AppVersion "1.0.5"
+#define AppVersion "1.0.6"
 
 [Setup]
 AppId={{6F40E14D-6239-463D-9006-D027C4FF2139}

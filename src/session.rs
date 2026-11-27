@@ -319,10 +319,6 @@ pub struct SearchOptions {
     pub match_case: bool,
 }
 
-fn word_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_' || unicode_normalization::char::is_combining_mark(c)
-}
-
 fn fold(c: char, match_case: bool) -> Vec<char> {
     if !match_case && (c == 'ß' || c == 'ẞ') {
         return vec!['s', 's'];
@@ -350,10 +346,6 @@ pub fn hits(glyphs: &[Glyph], query: &str, options: SearchOptions) -> Vec<Vec<Re
     let code = needle.iter().all(char::is_ascii_alphanumeric)
         && needle.iter().any(char::is_ascii_alphabetic)
         && needle.iter().any(char::is_ascii_digit);
-    // Treat a four-digit mixed hexadecimal alarm code as the same token with
-    // or without the conventional prefix, without loosening word boundaries.
-    let optional_hex_prefix =
-        code && needle.len() == 4 && needle.iter().all(char::is_ascii_hexdigit);
     let mut hay = vec![];
     let mut indices = vec![];
     for (i, g) in glyphs.iter().enumerate() {
@@ -384,12 +376,6 @@ pub fn hits(glyphs: &[Glyph], query: &str, options: SearchOptions) -> Vec<Vec<Re
     let mut i = 0;
     while i < hay.len() {
         let mut cursor = i;
-        if optional_hex_prefix
-            && hay.get(i) == Some(&'0')
-            && hay.get(i + 1).is_some_and(|c| c.eq_ignore_ascii_case(&'x'))
-        {
-            cursor += 2;
-        }
         let mut matched = true;
         for &c in &needle {
             if c == ' ' {
@@ -415,13 +401,9 @@ pub fn hits(glyphs: &[Glyph], query: &str, options: SearchOptions) -> Vec<Vec<Re
             }
         }
         if matched && code {
-            let before = i.checked_sub(1).and_then(|j| hay.get(j));
-            let after = hay.get(cursor);
-            matched = !before.is_some_and(|&c| word_char(c))
-                && !after.is_some_and(|&c| word_char(c))
-                && indices[i..cursor]
-                    .iter()
-                    .all(|&j| glyphs[j].rect.is_positive());
+            matched = indices[i..cursor]
+                .iter()
+                .all(|&j| glyphs[j].rect.is_positive());
         }
         if matched {
             let range = indices[i]..=indices[cursor - 1];

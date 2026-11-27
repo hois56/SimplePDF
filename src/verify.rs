@@ -59,8 +59,8 @@ pub fn run(dir: &Path) -> Result<()> {
         let defaults = session::SearchOptions::default();
         let results = session::hits(&glyphs, "e23", defaults);
         ensure!(
-            results.len() == 3,
-            "e23 코드 검색: {}건 (3건 예상)",
+            results.len() == 5,
+            "e23 코드 검색: {}건 (5건 예상)",
             results.len()
         );
         for boxes in results {
@@ -76,8 +76,8 @@ pub fn run(dir: &Path) -> Result<()> {
                 "코드 강조 범위: {highlighted}"
             );
         }
-        passed.push("e23 코드 일치·단독 숫자와 줄 경계 제외·강조 범위");
-        for (query, match_case, expected) in [("e23", true, 1), ("E23", true, 2), ("23", false, 8)]
+        passed.push("e23 포함 검색·단독 숫자와 줄 경계 제외·강조 범위");
+        for (query, match_case, expected) in [("e23", true, 1), ("E23", true, 4), ("23", false, 8)]
         {
             let options = session::SearchOptions { match_case };
             ensure!(
@@ -94,8 +94,8 @@ pub fn run(dir: &Path) -> Result<()> {
         let hex_glyphs = hex.page(0)?.layout()?.glyphs;
         let result = session::hits(&hex_glyphs, "282a", defaults);
         ensure!(
-            result.len() == 3,
-            "bare hex code should find prefixed and bare tokens"
+            result.len() == 6,
+            "hex substring should match in longer tokens"
         );
         let selected: Vec<String> = result
             .iter()
@@ -110,10 +110,10 @@ pub fn run(dir: &Path) -> Result<()> {
             })
             .collect();
         ensure!(
-            selected == ["0x282A", "0X282a", "282A"],
+            selected == ["282A", "282a", "282A", "282A", "282A", "282A"],
             "highlighted tokens: {selected:?}"
         );
-        ensure!(session::hits(&hex_glyphs, "0x282a", defaults).len() == 2);
+        ensure!(session::hits(&hex_glyphs, "0x282a", defaults).len() == 4);
         ensure!(
             session::hits(
                 &hex_glyphs,
@@ -123,7 +123,7 @@ pub fn run(dir: &Path) -> Result<()> {
             .len()
                 == 1
         );
-        passed.push("0x 접두어를 생략한 알람 코드 검색과 강조 범위");
+        passed.push("접두어·접미어가 있는 문자열의 포함 검색 및 일치 부분 강조");
         s.apply(|d| d.page(0)?.edit(&edit))?;
         let layout = s.doc.page(0)?.layout()?;
         ensure!(
